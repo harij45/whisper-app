@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Feedback - Whisper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="container">
+
+    <h2>Send Feedback</h2>
+
+    <textarea id="feedbackInput" placeholder="Share your thoughts or suggestions..."></textarea>
+
+    <button onclick="submitFeedback()">Submit</button>
+
+    <br><br>
+    <a href="index.html">← Back to Whisper</a>
+
+</div>
+
+<script>
+function submitFeedback(){
+
+    let text = document.getElementById("feedbackInput").value;
+
+    if(text.trim() === ""){
+        alert("Please enter feedback");
+        return;
+    }
+
+    alert("Thank you for your feedback!");
+
+    document.getElementById("feedbackInput").value="";
+}
+</script>
+
+</body>
+</html>

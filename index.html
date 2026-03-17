@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Whisper</title>
+    <link rel="stylesheet" href="style.css">
+    <a href="feedback.html" class="feedbackBtn">Feedback</a>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="header">
+
+        <img src="logo.png" class="logo">
+
+        <p class="tagline">Speak freely. Stay unknown.</p>
+
+    </div>
+
+    <div id="home">
+
+        <textarea id="helpInput" placeholder="What's on your mind..."></textarea>
+        <button onclick="createRoom()">Start Whisper</button>
+
+        <h2>Live Rooms</h2>
+        <div id="roomsList"></div>
+
+    </div>
+
+    <div id="chatRoom" class="hidden">
+        <button onclick="closeRoom()" class="closeBtn">Close Room</button>
+
+        <h2 id="roomTitle"></h2>
+
+        <div id="chatMessages"></div>
+
+        <input type="text" id="chatInput" placeholder="Type your whisper...">
+        <button onclick="sendMessage()">Send</button>
+
+        <button onclick="goHome()">Back</button>
+
+    </div>
+
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>
