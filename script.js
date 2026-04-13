@@ -1,3 +1,37 @@
+
+
+
+const names = ["Shadow","Ghost","Silent","Dark","Hidden"];
+const animals = ["Fox","Wolf","Tiger","Raven","Viper"];
+
+let username = localStorage.getItem("username");
+
+if(!username){
+    username = generateName();
+    localStorage.setItem("username", username);
+}
+
+function generateName(){
+    const name = names[Math.floor(Math.random() * names.length)];
+    const animal = animals[Math.floor(Math.random() * animals.length)];
+    return name + animal;
+}
+
+function getTime(){
+    let now = new Date();
+
+    let hours = now.getHours();
+    let minutes = now.getMinutes();
+
+    let ampm = hours >= 12 ? "PM" : "AM";
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+
+    minutes = minutes < 10 ? "0" + minutes : minutes;
+
+    return hours + ":" + minutes + " " + ampm;
+}
+
 let rooms = JSON.parse(localStorage.getItem("shadowRooms")) || {};
 let currentRoom = null;
 let currentUser = "User_" + Math.floor(Math.random() * 10000);
@@ -11,17 +45,24 @@ function generateRoomCode(){
 }
 
 function createRoom(){
-
     let text = document.getElementById("helpInput").value.trim();
     if(text === "") return;
 
     let roomCode = generateRoomCode();
 
-    rooms[roomCode] = {
-        help: text,
-        messages: []
+    // Create a message object out of the initial text
+    let initialMessage = {
+        sender: username,
+        text: text,
+        time: getTime()
     };
 
+    rooms[roomCode] = {
+        help: text,
+        messages: [initialMessage] // <-- Drop the initial message in here
+    };
+    
+    saveRooms(); 
     showRooms();
 
     document.getElementById("helpInput").value="";
@@ -62,43 +103,52 @@ function openRoom(roomId) {
 }
 
 function showMessages() {
-
     let box = document.getElementById("chatMessages");
-
     box.innerHTML = "";
 
     rooms[currentRoom].messages.forEach(msg => {
-
         let div = document.createElement("div");
-
         div.className = "message";
 
-        div.innerHTML = "<b>" + msg.sender + ":</b> " + msg.text;
+        // <-- UPDATE THIS to match your sendMessage layout
+        div.innerHTML = `
+        <div class="msgRow">
+            <span class="msgText"><b>${msg.sender}</b>: ${msg.text}</span>
+            <span class="time">${msg.time || ""}</span>
+        </div>
+        `;
 
         box.appendChild(div);
-
     });
-
 }
 
-function sendMessage() {
-
+function sendMessage(){
     let input = document.getElementById("chatInput");
+    let message = input.value;
 
-    if (!input.value) return;
+    if(message.trim() === "") return;
 
-    rooms[currentRoom].messages.push({
-
-        sender: currentUser,
-        text: input.value
-
-    });
-
-    input.value = "";
-
+    let messageData = {
+        sender: username,
+        text: message,
+        time: getTime() 
+    };
+    rooms[currentRoom].messages.push(messageData);
     saveRooms();
 
-    showMessages();
+    let msgDiv = document.createElement("div");
+    msgDiv.classList.add("message");
+
+    msgDiv.innerHTML = `
+    <div class="msgRow">
+        <span class="msgText"><b>${username}</b>: ${message}</span>
+        <span class="time">${getTime()}</span>
+    </div>
+`;
+
+    document.getElementById("chatMessages").appendChild(msgDiv);
+
+    input.value = "";
 }
 
 function goHome() {
@@ -128,7 +178,40 @@ function closeRoom(){
 
     delete rooms[currentRoom];
 
+    saveRooms();
+
     goHome();
 
     showRooms();
 }
+
+function reportRoom(){
+    if(confirm("Report this room?")){
+        alert("Room reported successfully.");
+        // later you can send this to backend / database
+    }
+}
+
+document.addEventListener("keydown", function(event){
+
+    if(event.key === "Enter"){
+        let chatInput = document.getElementById("chatInput");
+        let helpInput = document.getElementById("helpInput");
+
+        // If typing in the chat room
+        if(document.activeElement === chatInput){
+            event.preventDefault(); // stop newline
+            sendMessage();
+        }
+        // If typing in the home page textarea
+        else if(document.activeElement === helpInput){
+            event.preventDefault(); // stop newline
+            createRoom();
+        }
+    }
+
+    // ESC → go back
+    if(event.key === "Escape"){
+        goHome(); 
+    }
+});
