@@ -50,7 +50,6 @@ function createRoom(){
 
     let roomCode = generateRoomCode();
 
-    // Create a message object out of the initial text
     let initialMessage = {
         sender: username,
         text: text,
@@ -59,7 +58,7 @@ function createRoom(){
 
     rooms[roomCode] = {
         help: text,
-        messages: [initialMessage] // <-- Drop the initial message in here
+        messages: [initialMessage]
     };
     
     saveRooms(); 
@@ -188,7 +187,7 @@ function closeRoom(){
 function reportRoom(){
     if(confirm("Report this room?")){
         alert("Room reported successfully.");
-        // later you can send this to backend / database
+        
     }
 }
 
@@ -198,19 +197,19 @@ document.addEventListener("keydown", function(event){
         let chatInput = document.getElementById("chatInput");
         let helpInput = document.getElementById("helpInput");
 
-        // If typing in the chat room
+        
         if(document.activeElement === chatInput){
-            event.preventDefault(); // stop newline
+            event.preventDefault();
             sendMessage();
         }
-        // If typing in the home page textarea
+        
         else if(document.activeElement === helpInput){
-            event.preventDefault(); // stop newline
+            event.preventDefault(); 
             createRoom();
         }
     }
 
-    // ESC → go back
+    
     if(event.key === "Escape"){
         goHome(); 
     }
