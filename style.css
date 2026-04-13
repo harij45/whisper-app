@@ -92,6 +92,7 @@ button{
     border-color:#de1b2f;
 }
 
+/* Click → darker red */
 .closeBtn:active{
     background:#b20000;
     border-color:#b20000;
@@ -160,11 +161,13 @@ button{
     transition: all 0.2s ease;
 }
 
+/* hover → red */
 .reportBtn:hover .reportIcon{
     filter: brightness(0) saturate(100%) invert(27%) sepia(96%) saturate(7482%) hue-rotate(353deg) brightness(97%) contrast(122%);
     opacity:1;
 }
 
+/* click */
 .reportBtn:active .reportIcon{
     transform:scale(0.85);
 }

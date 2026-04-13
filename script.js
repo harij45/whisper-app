@@ -32,14 +32,14 @@ function getTime(){
     return hours + ":" + minutes + " " + ampm;
 }
 
-function scrollToBottom() {
-    let box = document.getElementById("chatMessages");
-    box.scrollTop = box.scrollHeight;
+let rooms = JSON.parse(localStorage.getItem("shadowRooms")) || {};
+let currentRoom = null;
+let currentUser = "User_" + Math.floor(Math.random() * 10000);
+
+function saveRooms() {
+    localStorage.setItem("shadowRooms", JSON.stringify(rooms));
 }
 
-const socket = io(); 
-let rooms = {}; 
-let currentRoom = null;
 function generateRoomCode(){
     return Math.random().toString(36).substring(2,7).toUpperCase();
 }
@@ -49,16 +49,23 @@ function createRoom(){
     if(text === "") return;
 
     let roomCode = generateRoomCode();
-    let initialMessage = { sender: username, text: text, time: getTime() };
 
-    socket.emit('create_room', {
-        roomCode: roomCode,
-        helpText: text,
-        initialMessage: initialMessage
-    });
+    // Create a message object out of the initial text
+    let initialMessage = {
+        sender: username,
+        text: text,
+        time: getTime()
+    };
+
+    rooms[roomCode] = {
+        help: text,
+        messages: [initialMessage] // <-- Drop the initial message in here
+    };
+    
+    saveRooms(); 
+    showRooms();
 
     document.getElementById("helpInput").value="";
-    joinRoom(roomCode); 
 }
 
 function showRooms(){
@@ -103,6 +110,7 @@ function showMessages() {
         let div = document.createElement("div");
         div.className = "message";
 
+        // <-- UPDATE THIS to match your sendMessage layout
         div.innerHTML = `
         <div class="msgRow">
             <span class="msgText"><b>${msg.sender}</b>: ${msg.text}</span>
@@ -120,13 +128,25 @@ function sendMessage(){
 
     if(message.trim() === "") return;
 
-    let messageData = { sender: username, text: message, time: getTime() };
+    let messageData = {
+        sender: username,
+        text: message,
+        time: getTime() 
+    };
+    rooms[currentRoom].messages.push(messageData);
+    saveRooms();
 
-    // Send the message to the server
-    socket.emit('send_message', {
-        roomCode: currentRoom,
-        message: messageData
-    });
+    let msgDiv = document.createElement("div");
+    msgDiv.classList.add("message");
+
+    msgDiv.innerHTML = `
+    <div class="msgRow">
+        <span class="msgText"><b>${username}</b>: ${message}</span>
+        <span class="time">${getTime()}</span>
+    </div>
+`;
+
+    document.getElementById("chatMessages").appendChild(msgDiv);
 
     input.value = "";
 }
@@ -141,30 +161,34 @@ function goHome() {
 showRooms();
 
 function joinRoom(code){
+
     currentRoom = code;
-    
-    
-    socket.emit('join', { room: code });
 
     document.getElementById("home").classList.add("hidden");
     document.getElementById("chatRoom").classList.remove("hidden");
+
     document.getElementById("roomTitle").innerText = "Room: " + code;
 
     showMessages();
-    setTimeout(scrollToBottom, 50);
 }
 
 function closeRoom(){
+
     if(!currentRoom) return;
 
-    socket.emit('close_room', { roomCode: currentRoom });
+    delete rooms[currentRoom];
+
+    saveRooms();
 
     goHome();
+
+    showRooms();
 }
+
 function reportRoom(){
     if(confirm("Report this room?")){
         alert("Room reported successfully.");
-        
+        // later you can send this to backend / database
     }
 }
 
@@ -174,32 +198,20 @@ document.addEventListener("keydown", function(event){
         let chatInput = document.getElementById("chatInput");
         let helpInput = document.getElementById("helpInput");
 
-        
+        // If typing in the chat room
         if(document.activeElement === chatInput){
-            event.preventDefault();
+            event.preventDefault(); // stop newline
             sendMessage();
         }
-        
+        // If typing in the home page textarea
         else if(document.activeElement === helpInput){
-            event.preventDefault(); 
+            event.preventDefault(); // stop newline
             createRoom();
         }
     }
 
-    
+    // ESC → go back
     if(event.key === "Escape"){
         goHome(); 
     }
-});
-
-socket.on('update_rooms', function(serverRooms) {
-    rooms = serverRooms;
-    showRooms();
-});
-
-
-socket.on('receive_message', function(msg) {
-    rooms[currentRoom].messages.push(msg);
-    showMessages();
-    scrollToBottom(); 
 });
