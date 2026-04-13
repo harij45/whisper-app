@@ -32,9 +32,10 @@ function getTime(){
     return hours + ":" + minutes + " " + ampm;
 }
 
-let rooms = JSON.parse(localStorage.getItem("shadowRooms")) || {};
-let currentRoom = null;
-let currentUser = "User_" + Math.floor(Math.random() * 10000);
+function scrollToBottom() {
+    let box = document.getElementById("chatMessages");
+    box.scrollTop = box.scrollHeight;
+}
 
 const socket = io(); 
 let rooms = {}; 
@@ -154,18 +155,12 @@ function joinRoom(code){
 }
 
 function closeRoom(){
-
     if(!currentRoom) return;
 
-    delete rooms[currentRoom];
-
-    saveRooms();
+    socket.emit('close_room', { roomCode: currentRoom });
 
     goHome();
-
-    showRooms();
 }
-
 function reportRoom(){
     if(confirm("Report this room?")){
         alert("Room reported successfully.");

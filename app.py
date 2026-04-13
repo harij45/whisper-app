@@ -39,6 +39,15 @@ def handle_send_message(data):
         rooms[room_code]['messages'].append(message)
         emit('receive_message', message, to=room_code)
 
+@socketio.on('close_room')
+def handle_close_room(data):
+    room_code = data['roomCode']
+    
+    if room_code in rooms:
+        del rooms[room_code] 
+        
+        emit('update_rooms', rooms, broadcast=True)
+
 if __name__ == '__main__':
     print("Starting Whisper Server on http://127.0.0.1:5000")
     socketio.run(app, debug=True, port=5000)
