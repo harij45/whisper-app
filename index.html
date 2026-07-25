@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#070013">
     <title>Whisper</title>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -20,38 +21,49 @@
 
     <div id="home">
 
-        <textarea id="helpInput" placeholder="What's on your mind..."></textarea>
-        <button onclick="createRoom()">Start Whisper</button>
+        <label for="helpInput" class="srOnly">What's on your mind?</label>
+        <textarea id="helpInput" maxlength="500" placeholder="What's on your mind..."></textarea>
+        <button class="startBtn" onclick="createRoom()">Start Whisper</button>
 
-        <h2>Live Rooms</h2>
-        <p id="status" class="status" role="status"></p>
+        <div class="sectionHeading">
+            <h2>Live Rooms</h2>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
         <div id="roomsList"></div>
 
     </div>
 
     <div id="chatRoom" class="hidden">
-        <button id="closeRoomBtn" onclick="closeRoom()" class="closeBtn">Close Room</button>
-        
-        <button class="reportBtn" onclick="reportRoom()" title="Report">
-            <img src="report.png" class="reportIcon" alt="">
-        </button>
+        <div class="chatTopbar">
+            <button class="secondaryBtn" onclick="goHome()">← Back</button>
+            <div class="roomActions">
+                <button class="reportBtn" onclick="reportRoom()" title="Report room">
+                    <img src="report.png" class="reportIcon" alt="">
+                    <span>Report</span>
+                </button>
+                <button id="closeRoomBtn" onclick="closeRoom()" class="closeBtn">Close Room</button>
+            </div>
+        </div>
 
         <h2 id="roomTitle"></h2>
 
-        <div id="chatMessages"></div>
-        <p id="chatStatus" class="status" role="status"></p>
+        <div id="chatMessages" role="log" aria-live="polite"></div>
+        <p id="chatStatus" class="status" role="status" aria-live="polite"></p>
 
-        <input type="text" id="chatInput" placeholder="Type your whisper...">
-        <button onclick="sendMessage()">Send</button>
-
-        <button onclick="goHome()">Back</button>
+        <div class="composer">
+            <label for="chatInput" class="srOnly">Message</label>
+            <input type="text" id="chatInput" maxlength="1000" autocomplete="off" placeholder="Type your whisper...">
+            <button class="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
 
     </div>
     
+    <div class="cardFooter">
+        <a href="feedback.html" class="feedbackBtn">Feedback</a>
+    </div>
 
 </div>
 
-<a href="feedback.html" class="feedbackBtn">Feedback</a>
 <script src="script.js"></script>
 
 </body>

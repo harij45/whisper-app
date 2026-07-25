@@ -1,21 +1,29 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#070013">
     <title>Feedback - Whisper</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<div class="container">
+<div class="container feedbackPanel">
 
-    <h2>Send Feedback</h2>
+    <div class="header">
+        <img src="logo.png" class="logo" alt="Whisper">
+        <p class="tagline">Help us make Whisper better.</p>
+    </div>
 
-    <textarea id="feedbackInput" placeholder="Share your thoughts or suggestions..."></textarea>
+    <h1>Send Feedback</h1>
+    <p class="pageIntro">Share a suggestion or tell us what could work better.</p>
 
-    <button onclick="submitFeedback()">Submit</button>
+    <label for="feedbackInput" class="srOnly">Your feedback</label>
+    <textarea id="feedbackInput" maxlength="1000" placeholder="Share your thoughts or suggestions..."></textarea>
 
-    <br><br>
-    <a href="index.html">← Back to Whisper</a>
+    <button class="fullBtn" onclick="submitFeedback()">Submit Feedback</button>
+    <a class="backLink" href="index.html">← Back to Whisper</a>
 
 </div>
 
