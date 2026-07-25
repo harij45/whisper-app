@@ -1,217 +1,280 @@
-
-
-
-const names = ["Shadow","Ghost","Silent","Dark","Hidden"];
-const animals = ["Fox","Wolf","Tiger","Raven","Viper"];
+const names = ["Shadow", "Ghost", "Silent", "Dark", "Hidden"];
+const animals = ["Fox", "Wolf", "Tiger", "Raven", "Viper"];
 
 let username = localStorage.getItem("username");
-
-if(!username){
+if (!username) {
     username = generateName();
     localStorage.setItem("username", username);
 }
 
-function generateName(){
+let currentRoom = null;
+let rooms = {};
+let isSending = false;
+const ownerTokens = JSON.parse(localStorage.getItem("whisperOwnerTokens") || "{}");
+
+function generateName() {
     const name = names[Math.floor(Math.random() * names.length)];
     const animal = animals[Math.floor(Math.random() * animals.length)];
-    return name + animal;
+    return `${name}${animal}${Math.floor(Math.random() * 1000)}`;
 }
 
-function getTime(){
-    let now = new Date();
-
-    let hours = now.getHours();
-    let minutes = now.getMinutes();
-
-    let ampm = hours >= 12 ? "PM" : "AM";
-    hours = hours % 12;
-    hours = hours ? hours : 12;
-
-    minutes = minutes < 10 ? "0" + minutes : minutes;
-
-    return hours + ":" + minutes + " " + ampm;
+function generateOwnerToken() {
+    const values = new Uint32Array(8);
+    crypto.getRandomValues(values);
+    return Array.from(values, value => value.toString(16).padStart(8, "0")).join("");
 }
 
-let rooms = JSON.parse(localStorage.getItem("shadowRooms")) || {};
-let currentRoom = null;
-let currentUser = "User_" + Math.floor(Math.random() * 10000);
-
-function saveRooms() {
-    localStorage.setItem("shadowRooms", JSON.stringify(rooms));
+function saveOwnerTokens() {
+    localStorage.setItem("whisperOwnerTokens", JSON.stringify(ownerTokens));
 }
 
-function generateRoomCode(){
-    return Math.random().toString(36).substring(2,7).toUpperCase();
-}
-
-function createRoom(){
-    let text = document.getElementById("helpInput").value.trim();
-    if(text === "") return;
-
-    let roomCode = generateRoomCode();
-
-    // Create a message object out of the initial text
-    let initialMessage = {
-        sender: username,
-        text: text,
-        time: getTime()
-    };
-
-    rooms[roomCode] = {
-        help: text,
-        messages: [initialMessage] // <-- Drop the initial message in here
-    };
-    
-    saveRooms(); 
-    showRooms();
-
-    document.getElementById("helpInput").value="";
-}
-
-function showRooms(){
-
-    let list = document.getElementById("roomsList");
-    list.innerHTML = "";
-
-    for(let code in rooms){
-
-        let div = document.createElement("div");
-
-        div.className = "room";
-
-        div.innerHTML = `
-            <b>Room: ${code}</b><br>
-            ${rooms[code].help}
-        `;
-
-        div.onclick = ()=>joinRoom(code);
-
-        list.appendChild(div);
-    }
-}
-
-function openRoom(roomId) {
-
-    currentRoom = roomId;
-
-    document.getElementById("home").classList.add("hidden");
-    document.getElementById("chatRoom").classList.remove("hidden");
-
-    document.getElementById("roomTitle").innerText = "Private Room";
-
-    showMessages();
-}
-
-function showMessages() {
-    let box = document.getElementById("chatMessages");
-    box.innerHTML = "";
-
-    rooms[currentRoom].messages.forEach(msg => {
-        let div = document.createElement("div");
-        div.className = "message";
-
-        // <-- UPDATE THIS to match your sendMessage layout
-        div.innerHTML = `
-        <div class="msgRow">
-            <span class="msgText"><b>${msg.sender}</b>: ${msg.text}</span>
-            <span class="time">${msg.time || ""}</span>
-        </div>
-        `;
-
-        box.appendChild(div);
+function formatTime(timestamp) {
+    return new Date(timestamp).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit"
     });
 }
 
-function sendMessage(){
-    let input = document.getElementById("chatInput");
-    let message = input.value;
+async function api(path, options = {}) {
+    const response = await fetch(path, {
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {})
+        }
+    });
 
-    if(message.trim() === "") return;
+    if (!response.ok) {
+        let message = "Something went wrong. Please try again.";
+        try {
+            const body = await response.json();
+            message = body.error || message;
+        } catch {
+            // Keep the friendly fallback when the server returns no JSON.
+        }
+        throw new Error(message);
+    }
 
-    let messageData = {
-        sender: username,
-        text: message,
-        time: getTime() 
-    };
-    rooms[currentRoom].messages.push(messageData);
-    saveRooms();
-
-    let msgDiv = document.createElement("div");
-    msgDiv.classList.add("message");
-
-    msgDiv.innerHTML = `
-    <div class="msgRow">
-        <span class="msgText"><b>${username}</b>: ${message}</span>
-        <span class="time">${getTime()}</span>
-    </div>
-`;
-
-    document.getElementById("chatMessages").appendChild(msgDiv);
-
-    input.value = "";
+    return response.status === 204 ? null : response.json();
 }
 
-function goHome() {
-
-    document.getElementById("chatRoom").classList.add("hidden");
-    document.getElementById("home").classList.remove("hidden");
-
+function setStatus(message, isError = false) {
+    const status = document.getElementById("status");
+    status.textContent = message;
+    status.classList.toggle("error", isError);
 }
 
-showRooms();
-
-function joinRoom(code){
-
-    currentRoom = code;
-
-    document.getElementById("home").classList.add("hidden");
-    document.getElementById("chatRoom").classList.remove("hidden");
-
-    document.getElementById("roomTitle").innerText = "Room: " + code;
-
-    showMessages();
-}
-
-function closeRoom(){
-
-    if(!currentRoom) return;
-
-    delete rooms[currentRoom];
-
-    saveRooms();
-
-    goHome();
-
-    showRooms();
-}
-
-function reportRoom(){
-    if(confirm("Report this room?")){
-        alert("Room reported successfully.");
-        // later you can send this to backend / database
+async function loadRooms() {
+    try {
+        const data = await api("/api/rooms");
+        rooms = Object.fromEntries(data.rooms.map(room => [room.code, room]));
+        showRooms();
+        setStatus(data.rooms.length ? "" : "No live rooms yet. Start the first whisper.");
+    } catch (error) {
+        setStatus(`Could not load rooms: ${error.message}`, true);
     }
 }
 
-document.addEventListener("keydown", function(event){
+async function createRoom() {
+    const input = document.getElementById("helpInput");
+    const helpText = input.value.trim();
+    if (!helpText || isSending) return;
 
-    if(event.key === "Enter"){
-        let chatInput = document.getElementById("chatInput");
-        let helpInput = document.getElementById("helpInput");
+    isSending = true;
+    setStatus("Creating room…");
+    const ownerToken = generateOwnerToken();
 
-        // If typing in the chat room
-        if(document.activeElement === chatInput){
-            event.preventDefault(); // stop newline
-            sendMessage();
+    try {
+        const data = await api("/api/rooms", {
+            method: "POST",
+            body: JSON.stringify({ helpText, sender: username, ownerToken })
+        });
+        ownerTokens[data.room.code] = ownerToken;
+        saveOwnerTokens();
+        input.value = "";
+        rooms[data.room.code] = data.room;
+        await joinRoom(data.room.code);
+    } catch (error) {
+        setStatus(error.message, true);
+    } finally {
+        isSending = false;
+    }
+}
+
+function showRooms() {
+    const list = document.getElementById("roomsList");
+    list.replaceChildren();
+
+    Object.values(rooms).forEach(room => {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "room";
+
+        const title = document.createElement("strong");
+        title.textContent = `Room: ${room.code}`;
+        const text = document.createElement("span");
+        text.textContent = room.help;
+
+        card.append(title, text);
+        card.addEventListener("click", () => joinRoom(room.code));
+        list.appendChild(card);
+    });
+}
+
+async function joinRoom(code) {
+    currentRoom = code;
+    document.getElementById("home").classList.add("hidden");
+    document.getElementById("chatRoom").classList.remove("hidden");
+    document.getElementById("roomTitle").textContent = `Room: ${code}`;
+    document.getElementById("closeRoomBtn").classList.toggle(
+        "hidden",
+        !ownerTokens[code]
+    );
+    await loadCurrentRoom();
+}
+
+async function loadCurrentRoom() {
+    if (!currentRoom) return;
+    const requestedRoom = currentRoom;
+
+    try {
+        const data = await api(`/api/rooms/${encodeURIComponent(requestedRoom)}`);
+        if (currentRoom !== requestedRoom) return;
+        renderMessages(data.messages);
+        document.getElementById("chatStatus").textContent = "";
+    } catch (error) {
+        if (currentRoom !== requestedRoom) return;
+        if (error.message === "Room not found.") {
+            goHome();
+            setStatus("That room has been closed.", true);
+        } else {
+            document.getElementById("chatStatus").textContent = error.message;
         }
-        // If typing in the home page textarea
-        else if(document.activeElement === helpInput){
-            event.preventDefault(); // stop newline
+    }
+}
+
+function renderMessages(messages) {
+    const box = document.getElementById("chatMessages");
+    const wasNearBottom =
+        box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    const previousLastId = box.lastElementChild?.dataset.messageId;
+    const nextLastId = messages.at(-1)?.id?.toString();
+
+    if (previousLastId === nextLastId && box.children.length === messages.length) {
+        return;
+    }
+
+    box.replaceChildren();
+    messages.forEach(message => {
+        const row = document.createElement("div");
+        row.className = "message";
+        row.dataset.messageId = message.id;
+
+        const messageRow = document.createElement("div");
+        messageRow.className = "msgRow";
+        const text = document.createElement("span");
+        text.className = "msgText";
+        const sender = document.createElement("strong");
+        sender.textContent = `${message.sender}: `;
+        text.append(sender, document.createTextNode(message.text));
+
+        const time = document.createElement("time");
+        time.className = "time";
+        time.textContent = formatTime(message.createdAt);
+        messageRow.append(text, time);
+        row.appendChild(messageRow);
+        box.appendChild(row);
+    });
+
+    if (wasNearBottom || !previousLastId) {
+        box.scrollTop = box.scrollHeight;
+    }
+}
+
+async function sendMessage() {
+    const input = document.getElementById("chatInput");
+    const text = input.value.trim();
+    if (!text || !currentRoom || isSending) return;
+
+    isSending = true;
+    document.getElementById("chatStatus").textContent = "Sending…";
+
+    try {
+        await api(`/api/rooms/${encodeURIComponent(currentRoom)}/messages`, {
+            method: "POST",
+            body: JSON.stringify({ sender: username, text })
+        });
+        input.value = "";
+        await loadCurrentRoom();
+    } catch (error) {
+        document.getElementById("chatStatus").textContent = error.message;
+    } finally {
+        isSending = false;
+    }
+}
+
+function goHome() {
+    currentRoom = null;
+    document.getElementById("chatRoom").classList.add("hidden");
+    document.getElementById("home").classList.remove("hidden");
+    loadRooms();
+}
+
+async function closeRoom() {
+    if (!currentRoom || !ownerTokens[currentRoom]) return;
+    if (!confirm("Close this room for everyone?")) return;
+
+    const roomCode = currentRoom;
+    try {
+        await api(`/api/rooms/${encodeURIComponent(roomCode)}`, {
+            method: "DELETE",
+            body: JSON.stringify({ ownerToken: ownerTokens[roomCode] })
+        });
+        delete ownerTokens[roomCode];
+        saveOwnerTokens();
+        goHome();
+    } catch (error) {
+        document.getElementById("chatStatus").textContent = error.message;
+    }
+}
+
+async function reportRoom() {
+    if (!currentRoom || !confirm("Report this room?")) return;
+
+    try {
+        await api(`/api/rooms/${encodeURIComponent(currentRoom)}/report`, {
+            method: "POST",
+            body: "{}"
+        });
+        alert("Room reported successfully.");
+    } catch (error) {
+        document.getElementById("chatStatus").textContent = error.message;
+    }
+}
+
+document.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey) {
+        if (document.activeElement === document.getElementById("chatInput")) {
+            event.preventDefault();
+            sendMessage();
+        } else if (document.activeElement === document.getElementById("helpInput")) {
+            event.preventDefault();
             createRoom();
         }
     }
 
-    // ESC → go back
-    if(event.key === "Escape"){
-        goHome(); 
+    if (event.key === "Escape" && currentRoom) {
+        goHome();
     }
 });
+
+setInterval(() => {
+    if (document.hidden) return;
+    if (currentRoom) {
+        loadCurrentRoom();
+    } else {
+        loadRooms();
+    }
+}, 2000);
+
+loadRooms();

@@ -1,29 +1,40 @@
 # Whisper
 
-Whisper is an anonymous support platform where users can share their thoughts and get help without revealing their identity.
+Whisper is an anonymous shared-room support app. Rooms and messages are stored on
+the server, so people on different devices can see and join the same conversations.
 
-## Features
+## Run locally
 
-- Create private rooms using random codes
-- Anonymous chat system
-- Close room functionality
-- Feedback system
-- Clean dark UI
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+```
 
-## How it Works
+Open <http://127.0.0.1:5000>. Local development uses `data/whisper.db`.
 
-1. User creates a room (Whisper)
-2. A unique code is generated
-3. Others can join and chat anonymously
-4. Room can be closed anytime
+## Deploy on Render
 
-## Technologies Used
+The included `render.yaml` creates:
 
-- HTML
-- CSS
-- JavaScript
+- a Python web service;
+- a Render Postgres database;
+- the `DATABASE_URL` connection between them.
 
-## Live Demo
+In Render, choose **New → Blueprint**, connect this repository, and deploy it.
 
-https://harij45.github.io/whisper-app/
+If the web service already exists, create a Render Postgres database and add its
+internal connection string to the web service as the `DATABASE_URL` environment
+variable. Use these service settings:
 
+```text
+Build command: pip install -r requirements.txt
+Start command: gunicorn app:app
+Health check: /health
+```
+
+Without `DATABASE_URL`, the app falls back to SQLite. That works locally and lets
+different users share rooms while the service is running, but Render's free web
+service filesystem is temporary, so SQLite rooms disappear after a restart or
+spin-down. Postgres keeps them across web-service restarts.

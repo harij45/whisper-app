@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: whisper-app
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DATABASE_URL
+        fromDatabase:
+          name: whisper-db
+          property: connectionString
+
+databases:
+  - name: whisper-db
+    plan: free
+    databaseName: whisper
+    user: whisper

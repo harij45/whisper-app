@@ -5,7 +5,8 @@ body{
     display:flex;
     justify-content:center;
     align-items:center;
-    height:100vh;
+    min-height:100vh;
+    margin:0;
 }
 
 .container{
@@ -16,9 +17,11 @@ body{
     padding:20px;
     border-radius:15px;
     box-shadow: 0 0 25px rgba(108, 59, 255, 0.2);
-    #chatRoom{
-    position:relative;
+    box-sizing:border-box;
 }
+
+#chatRoom{
+    position:relative;
 }
 
 .header{
@@ -43,6 +46,8 @@ textarea{
     color:white;
     padding:10px;
     margin-top:10px;
+    box-sizing:border-box;
+    resize:vertical;
 }
 
 input{
@@ -59,17 +64,35 @@ button{
     color:white;
     border:none;
     margin-top:5px;
-}
-
-.room{
-    background:#1f1a2e;
-    padding:10px;
-    margin-top:10px;
+    border-radius:5px;
     cursor:pointer;
 }
 
+.room{
+    display:block;
+    width:100%;
+    background:#1f1a2e;
+    color:white;
+    padding:10px;
+    margin-top:10px;
+    border:1px solid transparent;
+    text-align:left;
+    cursor:pointer;
+}
+
+.room:hover{
+    border-color:#6c3bff;
+}
+
+.room span{
+    display:block;
+    margin-top:5px;
+    color:#d6d0e5;
+    overflow-wrap:anywhere;
+}
+
 .hidden{
-    display:none;
+    display:none !important;
 }
 
 #chatMessages{
@@ -78,6 +101,20 @@ button{
     overflow-y:auto;
     margin-top:10px;
     padding:10px;
+}
+
+.message{
+    padding:6px 0;
+}
+
+.status{
+    min-height:18px;
+    color:#aaa;
+    font-size:13px;
+}
+
+.status.error{
+    color:#ff7b88;
 }
 
 .closeBtn{
@@ -125,6 +162,7 @@ button{
     .container{
         width:95%;
         height:auto;
+        margin-bottom:80px;
     }
 
     textarea{
@@ -143,7 +181,7 @@ button{
 
 .reportBtn{
     position:absolute;
-    top:10px;
+    top:0;
     right:10px;
 
     background:transparent;
@@ -189,4 +227,3 @@ button{
     color:#888;
     white-space:nowrap;
 }
-
