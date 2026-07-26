@@ -189,6 +189,10 @@ function changeRoomPage(direction) {
 
 async function joinRoom(code) {
     currentRoom = code;
+    const messages = document.getElementById("chatMessages");
+    messages.replaceChildren();
+    messages.scrollTop = 0;
+    document.getElementById("chatStatus").textContent = "Loading room…";
     document.getElementById("home").classList.add("hidden");
     document.getElementById("chatRoom").classList.remove("hidden");
     document.getElementById("roomTitle").textContent = `Room: ${code}`;
@@ -281,6 +285,8 @@ async function sendMessage() {
 
 function goHome() {
     currentRoom = null;
+    document.getElementById("chatMessages").replaceChildren();
+    document.getElementById("chatStatus").textContent = "";
     document.getElementById("chatRoom").classList.add("hidden");
     document.getElementById("home").classList.remove("hidden");
     loadRooms();

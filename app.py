@@ -360,6 +360,11 @@ def index():
     return send_from_directory(app.root_path, "index.html")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return send_from_directory(app.root_path, "favicon.png", mimetype="image/png")
+
+
 @app.get("/<path:filename>")
 def static_file(filename):
     public_files = {
@@ -370,6 +375,8 @@ def static_file(filename):
         "feedback.js",
         "logo.png",
         "report.png",
+        "favicon.png",
+        "apple-touch-icon.png",
     }
     if filename not in public_files:
         abort(404)
