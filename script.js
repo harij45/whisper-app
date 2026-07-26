@@ -10,6 +10,9 @@ if (!username) {
 let currentRoom = null;
 let rooms = {};
 let isSending = false;
+let currentRoomPage = 1;
+let roomSearchQuery = "";
+const roomsPerPage = 15;
 const ownerTokens = JSON.parse(localStorage.getItem("whisperOwnerTokens") || "{}");
 
 function generateName() {
@@ -69,7 +72,6 @@ async function loadRooms() {
         const data = await api("/api/rooms");
         rooms = Object.fromEntries(data.rooms.map(room => [room.code, room]));
         showRooms();
-        setStatus(data.rooms.length ? "" : "No live rooms yet. Start the first whisper.");
     } catch (error) {
         setStatus(`Could not load rooms: ${error.message}`, true);
     }
@@ -103,9 +105,21 @@ async function createRoom() {
 
 function showRooms() {
     const list = document.getElementById("roomsList");
+    const pagination = document.getElementById("roomPagination");
+    const previousButton = document.getElementById("previousRoomsBtn");
+    const nextButton = document.getElementById("nextRoomsBtn");
+    const query = roomSearchQuery.toUpperCase();
+    const matchingRooms = Object.values(rooms).filter(room =>
+        room.code.includes(query)
+    );
+    const totalPages = Math.max(1, Math.ceil(matchingRooms.length / roomsPerPage));
+    currentRoomPage = Math.min(Math.max(currentRoomPage, 1), totalPages);
+    const pageStart = (currentRoomPage - 1) * roomsPerPage;
+    const pageRooms = matchingRooms.slice(pageStart, pageStart + roomsPerPage);
+
     list.replaceChildren();
 
-    Object.values(rooms).forEach(room => {
+    pageRooms.forEach(room => {
         const card = document.createElement("button");
         card.type = "button";
         card.className = "room";
@@ -119,6 +133,58 @@ function showRooms() {
         card.addEventListener("click", () => joinRoom(room.code));
         list.appendChild(card);
     });
+
+    pagination.classList.toggle("hidden", totalPages <= 1);
+    previousButton.disabled = currentRoomPage === 1;
+    nextButton.disabled = currentRoomPage === totalPages;
+    document.getElementById("roomPageIndicator").textContent =
+        `${currentRoomPage} / ${totalPages}`;
+
+    if (!Object.keys(rooms).length) {
+        setStatus("No live rooms yet. Start the first whisper.");
+    } else if (!matchingRooms.length) {
+        setStatus(`No room found for “${roomSearchQuery}”.`);
+    } else {
+        setStatus("");
+    }
+}
+
+function toggleRoomSearch() {
+    const search = document.getElementById("roomSearch");
+    const toggle = document.getElementById("toggleRoomSearchBtn");
+    const willOpen = search.classList.contains("hidden");
+
+    search.classList.toggle("hidden", !willOpen);
+    toggle.setAttribute("aria-expanded", String(willOpen));
+
+    if (willOpen) {
+        document.getElementById("roomSearchInput").focus();
+    } else {
+        clearRoomSearch();
+    }
+}
+
+function updateRoomSearch(event) {
+    const input = event.currentTarget;
+    const cleanedCode = input.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    input.value = cleanedCode;
+    roomSearchQuery = cleanedCode;
+    currentRoomPage = 1;
+    showRooms();
+}
+
+function clearRoomSearch() {
+    const input = document.getElementById("roomSearchInput");
+    input.value = "";
+    roomSearchQuery = "";
+    currentRoomPage = 1;
+    showRooms();
+}
+
+function changeRoomPage(direction) {
+    currentRoomPage += direction;
+    showRooms();
+    document.querySelector(".sectionHeading").scrollIntoView({ block: "start" });
 }
 
 async function joinRoom(code) {
@@ -260,6 +326,12 @@ document.addEventListener("keydown", event => {
         } else if (document.activeElement === document.getElementById("helpInput")) {
             event.preventDefault();
             createRoom();
+        } else if (document.activeElement === document.getElementById("roomSearchInput")) {
+            const exactRoom = rooms[roomSearchQuery];
+            if (exactRoom) {
+                event.preventDefault();
+                joinRoom(exactRoom.code);
+            }
         }
     }
 
@@ -267,6 +339,23 @@ document.addEventListener("keydown", event => {
         goHome();
     }
 });
+
+document.getElementById("startRoomBtn").addEventListener("click", createRoom);
+document.getElementById("backHomeBtn").addEventListener("click", goHome);
+document.getElementById("reportRoomBtn").addEventListener("click", reportRoom);
+document.getElementById("closeRoomBtn").addEventListener("click", closeRoom);
+document.getElementById("sendMessageBtn").addEventListener("click", sendMessage);
+document.getElementById("toggleRoomSearchBtn").addEventListener("click", toggleRoomSearch);
+document.getElementById("roomSearchInput").addEventListener("input", updateRoomSearch);
+document.getElementById("clearRoomSearchBtn").addEventListener("click", clearRoomSearch);
+document.getElementById("previousRoomsBtn").addEventListener(
+    "click",
+    () => changeRoomPage(-1)
+);
+document.getElementById("nextRoomsBtn").addEventListener(
+    "click",
+    () => changeRoomPage(1)
+);
 
 setInterval(() => {
     if (document.hidden) return;

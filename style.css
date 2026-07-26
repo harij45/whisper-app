@@ -10,6 +10,7 @@
     --purple: #6c3bff;
     --purple-hover: #5a2cff;
     --danger: #ff4d61;
+    --card-radius: 15px;
 }
 
 * {
@@ -18,14 +19,20 @@
 
 html {
     min-height: 100%;
+    background-color: #12002b;
 }
 
 body {
     min-height: 100vh;
     min-height: 100dvh;
     margin: 0;
-    padding: 28px 20px;
-    background: radial-gradient(circle at center, #12002b, #080019 70%);
+    padding:
+        calc(28px + env(safe-area-inset-top))
+        calc(20px + env(safe-area-inset-right))
+        calc(28px + env(safe-area-inset-bottom))
+        calc(20px + env(safe-area-inset-left));
+    background-color: #12002b;
+    background-image: radial-gradient(circle at center, #12002b, #080019 70%);
     color: var(--text);
     font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     line-height: 1.5;
@@ -42,7 +49,7 @@ body {
     padding: 20px;
     background: #080019;
     border: 0;
-    border-radius: 15px;
+    border-radius: var(--card-radius);
     box-shadow: 0 0 25px rgba(108, 59, 255, 0.2);
 }
 
@@ -74,6 +81,8 @@ h2 {
 textarea,
 input {
     width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
     border: 0;
     border-radius: 0;
     outline: none;
@@ -128,6 +137,11 @@ button:hover {
     background: var(--purple-hover);
 }
 
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 button:active {
     transform: translateY(1px);
 }
@@ -151,12 +165,112 @@ a:focus-visible {
 .sectionHeading {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 16px;
     margin: 28px 0 14px;
+}
+
+.searchToggleBtn,
+.searchClearBtn,
+.pageBtn {
+    background: transparent;
+    border-color: var(--border);
+    color: #d8d1e5;
+}
+
+.searchToggleBtn:hover,
+.searchClearBtn:hover,
+.pageBtn:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.searchToggleBtn {
+    display: grid;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    place-items: center;
+}
+
+.searchToggleBtn[aria-expanded="true"] {
+    border-color: rgba(108, 59, 255, 0.8);
+    color: white;
+}
+
+.searchGlyph {
+    position: relative;
+    display: block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+}
+
+.searchGlyph::after {
+    position: absolute;
+    right: -6px;
+    bottom: -4px;
+    width: 7px;
+    height: 2px;
+    background: currentColor;
+    content: "";
+    transform: rotate(45deg);
+    transform-origin: left center;
+}
+
+.roomSearch {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    margin: -4px 0 14px;
+}
+
+.roomSearch input {
+    height: 44px;
+    text-transform: uppercase;
+}
+
+.roomSearch input::-webkit-search-cancel-button {
+    display: none;
+}
+
+.searchClearBtn {
+    min-height: 44px;
+    padding: 8px 12px;
+}
+
+.privacyNote {
+    margin: -8px 0 14px;
+    color: #85808d;
+    font-size: 0.72rem;
 }
 
 #roomsList {
     display: grid;
     gap: 10px;
+}
+
+.pagination {
+    display: grid;
+    grid-template-columns: 44px 1fr 44px;
+    align-items: center;
+    gap: 10px;
+    margin-top: 18px;
+}
+
+.pageBtn {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    font-size: 1.2rem;
+}
+
+.pageIndicator {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
 }
 
 .room {
@@ -408,16 +522,17 @@ a:focus-visible {
         justify-content: flex-start;
         gap: 16px;
         padding:
-            max(14px, env(safe-area-inset-top))
-            0
-            max(22px, env(safe-area-inset-bottom));
+            calc(14px + env(safe-area-inset-top))
+            env(safe-area-inset-right)
+            calc(22px + env(safe-area-inset-bottom))
+            env(safe-area-inset-left);
     }
 
     .container {
         width: min(95%, 400px);
         margin: 0;
         padding: 20px 17px;
-        border-radius: 15px;
+        border-radius: var(--card-radius);
     }
 
     .header {

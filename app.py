@@ -1,21 +1,36 @@
 import hashlib
+import hmac
+import math
 import os
-import random
+import secrets
 import sqlite3
 import string
 import time
+from collections import defaultdict, deque
 from contextlib import contextmanager
+from functools import wraps
+from threading import Lock
 
 from flask import Flask, abort, jsonify, request, send_from_directory
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 IS_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 SQLITE_PATH = os.environ.get(
     "SQLITE_PATH", os.path.join(app.root_path, "data", "whisper.db")
 )
+ROOM_TTL_MS = 24 * 60 * 60 * 1000
+FEEDBACK_TTL_MS = 30 * 24 * 60 * 60 * 1000
+MAX_MESSAGES_PER_ROOM = 500
+
+_rate_buckets = defaultdict(deque)
+_rate_lock = Lock()
+_rate_salt = secrets.token_bytes(32)
 
 
 def now_ms():
@@ -24,6 +39,50 @@ def now_ms():
 
 def hash_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def rate_limit(limit, window_seconds):
+    def decorator(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            address = request.remote_addr or "unknown"
+            visitor = hashlib.sha256(
+                _rate_salt + address.encode("utf-8")
+            ).hexdigest()
+            key = (function.__name__, visitor)
+            current = time.monotonic()
+            cutoff = current - window_seconds
+
+            with _rate_lock:
+                bucket = _rate_buckets[key]
+                while bucket and bucket[0] <= cutoff:
+                    bucket.popleft()
+
+                if len(bucket) >= limit:
+                    retry_after = max(1, math.ceil(bucket[0] + window_seconds - current))
+                    response = jsonify(
+                        {"error": "Too many requests. Please try again shortly."}
+                    )
+                    response.status_code = 429
+                    response.headers["Retry-After"] = str(retry_after)
+                    return response
+
+                bucket.append(current)
+
+                if len(_rate_buckets) > 10_000:
+                    stale_keys = [
+                        bucket_key
+                        for bucket_key, timestamps in _rate_buckets.items()
+                        if not timestamps or timestamps[-1] <= current - 3600
+                    ][:1000]
+                    for stale_key in stale_keys:
+                        _rate_buckets.pop(stale_key, None)
+
+            return function(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 @contextmanager
@@ -63,6 +122,9 @@ def init_database():
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     )
     report_id = (
+        "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    )
+    feedback_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     )
 
@@ -105,9 +167,50 @@ def init_database():
         )
         execute(
             connection,
+            f"""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id {feedback_id},
+                text VARCHAR(1000) NOT NULL,
+                created_at BIGINT NOT NULL
+            )
+            """,
+        )
+        execute(
+            connection,
             "CREATE INDEX IF NOT EXISTS messages_room_code_id "
             "ON messages(room_code, id)",
         )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS rooms_created_at ON rooms(created_at)",
+        )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS feedback_created_at ON feedback(created_at)",
+        )
+
+
+def purge_expired_content(connection):
+    room_cutoff = now_ms() - ROOM_TTL_MS
+    feedback_cutoff = now_ms() - FEEDBACK_TTL_MS
+    execute(
+        connection,
+        """
+        DELETE FROM reports
+        WHERE room_code IN (SELECT code FROM rooms WHERE created_at < ?)
+        """,
+        (room_cutoff,),
+    )
+    execute(
+        connection,
+        """
+        DELETE FROM messages
+        WHERE room_code IN (SELECT code FROM rooms WHERE created_at < ?)
+        """,
+        (room_cutoff,),
+    )
+    execute(connection, "DELETE FROM rooms WHERE created_at < ?", (room_cutoff,))
+    execute(connection, "DELETE FROM feedback WHERE created_at < ?", (feedback_cutoff,))
 
 
 def clean_text(value, maximum):
@@ -139,6 +242,42 @@ def public_message(row):
     }
 
 
+@app.after_request
+def add_security_headers(response):
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    if request.is_secure:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Request is too large."}), 413
+    return "Request is too large.", 413
+
+
 @app.get("/")
 def index():
     return send_from_directory(app.root_path, "index.html")
@@ -151,6 +290,7 @@ def static_file(filename):
         "feedback.html",
         "style.css",
         "script.js",
+        "feedback.js",
         "logo.png",
         "report.png",
     }
@@ -165,8 +305,10 @@ def health():
 
 
 @app.get("/api/rooms")
+@rate_limit(120, 60)
 def list_rooms():
     with database() as connection:
+        purge_expired_content(connection)
         rows = execute(
             connection,
             "SELECT code, help_text, created_at FROM rooms ORDER BY created_at DESC",
@@ -175,6 +317,7 @@ def list_rooms():
 
 
 @app.post("/api/rooms")
+@rate_limit(6, 60)
 def create_room():
     data = request.get_json(silent=True) or {}
     help_text = clean_text(data.get("helpText"), 500)
@@ -187,9 +330,10 @@ def create_room():
     created_at = now_ms()
     alphabet = string.ascii_uppercase + string.digits
 
-    room_code = "".join(random.SystemRandom().choices(alphabet, k=8))
+    room_code = "".join(secrets.choice(alphabet) for _ in range(8))
 
     with database() as connection:
+        purge_expired_content(connection)
         execute(
             connection,
             """
@@ -223,9 +367,11 @@ def create_room():
 
 
 @app.get("/api/rooms/<room_code>")
+@rate_limit(120, 60)
 def get_room(room_code):
     room_code = room_code.upper()
     with database() as connection:
+        purge_expired_content(connection)
         room = execute(
             connection,
             "SELECT code, help_text, created_at FROM rooms WHERE code = ?",
@@ -254,6 +400,7 @@ def get_room(room_code):
 
 
 @app.post("/api/rooms/<room_code>/messages")
+@rate_limit(45, 60)
 def add_message(room_code):
     room_code = room_code.upper()
     data = request.get_json(silent=True) or {}
@@ -265,11 +412,20 @@ def add_message(room_code):
 
     created_at = now_ms()
     with database() as connection:
+        purge_expired_content(connection)
         room = execute(
             connection, "SELECT code FROM rooms WHERE code = ?", (room_code,)
         ).fetchone()
         if room is None:
             return jsonify({"error": "Room not found."}), 404
+
+        message_count = execute(
+            connection,
+            "SELECT COUNT(*) AS count FROM messages WHERE room_code = ?",
+            (room_code,),
+        ).fetchone()["count"]
+        if message_count >= MAX_MESSAGES_PER_ROOM:
+            return jsonify({"error": "This room has reached its message limit."}), 409
 
         if IS_POSTGRES:
             inserted = execute(
@@ -309,12 +465,14 @@ def add_message(room_code):
 
 
 @app.delete("/api/rooms/<room_code>")
+@rate_limit(10, 60)
 def delete_room(room_code):
     room_code = room_code.upper()
     data = request.get_json(silent=True) or {}
     owner_token = clean_text(data.get("ownerToken"), 200)
 
     with database() as connection:
+        purge_expired_content(connection)
         room = execute(
             connection,
             "SELECT owner_token_hash FROM rooms WHERE code = ?",
@@ -322,7 +480,9 @@ def delete_room(room_code):
         ).fetchone()
         if room is None:
             return jsonify({"error": "Room not found."}), 404
-        if not owner_token or hash_token(owner_token) != room["owner_token_hash"]:
+        if not owner_token or not hmac.compare_digest(
+            hash_token(owner_token), room["owner_token_hash"]
+        ):
             return jsonify({"error": "Only the room creator can close this room."}), 403
 
         execute(connection, "DELETE FROM reports WHERE room_code = ?", (room_code,))
@@ -333,9 +493,11 @@ def delete_room(room_code):
 
 
 @app.post("/api/rooms/<room_code>/report")
+@rate_limit(5, 3600)
 def report_room(room_code):
     room_code = room_code.upper()
     with database() as connection:
+        purge_expired_content(connection)
         room = execute(
             connection, "SELECT code FROM rooms WHERE code = ?", (room_code,)
         ).fetchone()
@@ -349,9 +511,28 @@ def report_room(room_code):
     return jsonify({"reported": True}), 201
 
 
+@app.post("/api/feedback")
+@rate_limit(3, 3600)
+def submit_feedback():
+    data = request.get_json(silent=True) or {}
+    text = clean_text(data.get("text"), 1000)
+    if not text:
+        return jsonify({"error": "Feedback is required."}), 400
+
+    with database() as connection:
+        purge_expired_content(connection)
+        execute(
+            connection,
+            "INSERT INTO feedback (text, created_at) VALUES (?, ?)",
+            (text, now_ms()),
+        )
+    return jsonify({"submitted": True}), 201
+
+
 init_database()
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    host = os.environ.get("HOST", "127.0.0.1")
+    app.run(host=host, port=port, debug=False)
