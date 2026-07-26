@@ -504,6 +504,23 @@ a:focus-visible {
     color: var(--muted);
 }
 
+.turnstileWidget {
+    width: 100%;
+    min-height: 65px;
+    margin-top: 14px;
+}
+
+.turnstileStatus {
+    min-height: 18px;
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+}
+
+.turnstileStatus.error {
+    color: #ff7b88;
+}
+
 .backLink {
     display: block;
     width: fit-content;

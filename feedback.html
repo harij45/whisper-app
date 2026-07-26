@@ -23,13 +23,17 @@
     <label for="feedbackInput" class="srOnly">Your feedback</label>
     <textarea id="feedbackInput" maxlength="1000" placeholder="Share your thoughts or suggestions..."></textarea>
 
-    <button id="submitFeedbackBtn" class="fullBtn">Submit Feedback</button>
+    <div id="turnstileWidget" class="turnstileWidget"></div>
+    <p id="turnstileStatus" class="turnstileStatus" role="status" aria-live="polite">Loading spam protection…</p>
+
+    <button id="submitFeedbackBtn" class="fullBtn" disabled>Submit Feedback</button>
     <p id="feedbackStatus" class="status" role="status" aria-live="polite"></p>
     <a class="backLink" href="index.html">← Back to Whisper</a>
 
 </div>
 
 <script src="feedback.js"></script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=initializeTurnstile&render=explicit" defer></script>
 
 </body>
 </html>

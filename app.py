@@ -1,11 +1,15 @@
 import hashlib
 import hmac
+import json
 import math
 import os
 import secrets
 import sqlite3
 import string
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from functools import wraps
@@ -21,6 +25,13 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 IS_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+WEB3FORMS_ACCESS_KEY = os.environ.get("WEB3FORMS_ACCESS_KEY", "").strip()
+WEB3FORMS_ENDPOINT = "https://api.web3forms.com/submit"
+TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
+TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
+TURNSTILE_VERIFY_ENDPOINT = (
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+)
 SQLITE_PATH = os.environ.get(
     "SQLITE_PATH", os.path.join(app.root_path, "data", "whisper.db")
 )
@@ -219,6 +230,71 @@ def clean_text(value, maximum):
     return value.strip()[:maximum]
 
 
+def deliver_feedback(text):
+    if not WEB3FORMS_ACCESS_KEY:
+        raise RuntimeError("Web3Forms is not configured.")
+
+    payload = json.dumps(
+        {
+            "access_key": WEB3FORMS_ACCESS_KEY,
+            "subject": "New feedback for Whisper",
+            "from_name": "Whisper",
+            "message": text,
+        }
+    ).encode("utf-8")
+    web3forms_request = urllib.request.Request(
+        WEB3FORMS_ENDPOINT,
+        data=payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Whisper/1.0",
+        },
+        method="POST",
+    )
+
+    # The URL is a fixed HTTPS constant; no user input can select the destination.
+    with urllib.request.urlopen(web3forms_request, timeout=10) as response:  # nosec B310
+        result = json.loads(response.read(64 * 1024))
+
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise RuntimeError("Web3Forms rejected the submission.")
+
+
+def verify_turnstile(token, expected_hostname):
+    if not TURNSTILE_SECRET_KEY:
+        raise RuntimeError("Turnstile is not configured.")
+
+    payload = urllib.parse.urlencode(
+        {
+            "secret": TURNSTILE_SECRET_KEY,
+            "response": token,
+        }
+    ).encode("utf-8")
+    turnstile_request = urllib.request.Request(
+        TURNSTILE_VERIFY_ENDPOINT,
+        data=payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Whisper/1.0",
+        },
+        method="POST",
+    )
+
+    # The URL is a fixed HTTPS constant; no user input can select the destination.
+    with urllib.request.urlopen(turnstile_request, timeout=10) as response:  # nosec B310
+        result = json.loads(response.read(64 * 1024))
+
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return False
+    if result.get("action") != "feedback":
+        return False
+
+    verified_hostname = str(result.get("hostname", "")).lower()
+    return hmac.compare_digest(verified_hostname, expected_hostname.lower())
+
+
 def row_dict(row):
     return dict(row) if row is not None else None
 
@@ -246,10 +322,11 @@ def public_message(row):
 def add_security_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self'; "
+        "script-src 'self' https://challenges.cloudflare.com; "
         "style-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
+        "frame-src https://challenges.cloudflare.com; "
         "object-src 'none'; "
         "base-uri 'none'; "
         "form-action 'self'; "
@@ -302,6 +379,14 @@ def static_file(filename):
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.get("/api/turnstile-config")
+@rate_limit(120, 60)
+def turnstile_config():
+    if not TURNSTILE_SITE_KEY or not TURNSTILE_SECRET_KEY:
+        return jsonify({"error": "Spam protection is not configured yet."}), 503
+    return jsonify({"siteKey": TURNSTILE_SITE_KEY})
 
 
 @app.get("/api/rooms")
@@ -515,17 +600,44 @@ def report_room(room_code):
 @rate_limit(3, 3600)
 def submit_feedback():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     text = clean_text(data.get("text"), 1000)
+    turnstile_token = clean_text(data.get("turnstileToken"), 2048)
     if not text:
         return jsonify({"error": "Feedback is required."}), 400
+    if not turnstile_token:
+        return jsonify({"error": "Please complete the spam check."}), 400
 
-    with database() as connection:
-        purge_expired_content(connection)
-        execute(
-            connection,
-            "INSERT INTO feedback (text, created_at) VALUES (?, ?)",
-            (text, now_ms()),
+    if not WEB3FORMS_ACCESS_KEY:
+        return jsonify({"error": "Feedback email is not configured yet."}), 503
+    if not TURNSTILE_SITE_KEY or not TURNSTILE_SECRET_KEY:
+        return jsonify({"error": "Spam protection is not configured yet."}), 503
+
+    try:
+        expected_hostname = request.host.partition(":")[0]
+        if not verify_turnstile(turnstile_token, expected_hostname):
+            return (
+                jsonify(
+                    {"error": "Spam verification failed. Please complete it again."}
+                ),
+                400,
+            )
+        deliver_feedback(text)
+    except urllib.error.HTTPError as error:
+        app.logger.warning("A feedback provider returned HTTP %s.", error.code)
+        status = 429 if error.code == 429 else 502
+        return (
+            jsonify({"error": "Feedback could not be sent. Please try again later."}),
+            status,
         )
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError):
+        app.logger.warning("Feedback verification or delivery failed.")
+        return (
+            jsonify({"error": "Feedback could not be sent. Please try again later."}),
+            502,
+        )
+
     return jsonify({"submitted": True}), 201
 
 
