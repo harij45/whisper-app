@@ -1,30 +1,28 @@
-const names = ["Shadow", "Ghost", "Silent", "Dark", "Hidden"];
-const animals = ["Fox", "Wolf", "Tiger", "Raven", "Viper"];
-
-let username = localStorage.getItem("username");
-if (!username) {
-    username = generateName();
-    localStorage.setItem("username", username);
-}
-
 let currentRoom = null;
 let rooms = {};
 let isSending = false;
+let username = null;
 let currentRoomPage = 1;
 let roomSearchQuery = "";
+let sitePaused = false;
 const roomsPerPage = 15;
 const ownerTokens = JSON.parse(localStorage.getItem("whisperOwnerTokens") || "{}");
+let identityToken = localStorage.getItem("whisperIdentityToken");
 
-function generateName() {
-    const name = names[Math.floor(Math.random() * names.length)];
-    const animal = animals[Math.floor(Math.random() * animals.length)];
-    return `${name}${animal}${Math.floor(Math.random() * 1000)}`;
-}
-
-function generateOwnerToken() {
+function generateSecureToken() {
     const values = new Uint32Array(8);
     crypto.getRandomValues(values);
     return Array.from(values, value => value.toString(16).padStart(8, "0")).join("");
+}
+
+if (!identityToken) {
+    identityToken = generateSecureToken();
+    localStorage.setItem("whisperIdentityToken", identityToken);
+}
+localStorage.removeItem("username");
+
+function generateOwnerToken() {
+    return generateSecureToken();
 }
 
 function saveOwnerTokens() {
@@ -67,6 +65,30 @@ function setStatus(message, isError = false) {
     status.classList.toggle("error", isError);
 }
 
+function updateActionAvailability() {
+    document.getElementById("startRoomBtn").disabled = !username || sitePaused;
+    document.getElementById("sendMessageBtn").disabled = !username || sitePaused;
+}
+
+async function loadSiteConfig() {
+    try {
+        const config = await api("/api/site-config");
+        sitePaused = config.paused;
+        const notice = document.getElementById("siteNotice");
+        const noticeText = config.notice || (
+            sitePaused
+                ? "Whisper is temporarily paused. You can read rooms, but new rooms and messages are disabled."
+                : ""
+        );
+        notice.textContent = noticeText;
+        notice.classList.toggle("hidden", !noticeText);
+        notice.classList.toggle("paused", sitePaused);
+        updateActionAvailability();
+    } catch {
+        // Keep the site usable if the optional status check briefly fails.
+    }
+}
+
 async function loadRooms() {
     try {
         const data = await api("/api/rooms");
@@ -77,10 +99,25 @@ async function loadRooms() {
     }
 }
 
+async function loadIdentity() {
+    updateActionAvailability();
+
+    try {
+        const data = await api("/api/identity", {
+            method: "POST",
+            body: JSON.stringify({ identityToken })
+        });
+        username = data.alias;
+        updateActionAvailability();
+    } catch (error) {
+        setStatus(`Could not reserve your anonymous name: ${error.message}`, true);
+    }
+}
+
 async function createRoom() {
     const input = document.getElementById("helpInput");
     const helpText = input.value.trim();
-    if (!helpText || isSending) return;
+    if (!helpText || !username || isSending || sitePaused) return;
 
     isSending = true;
     setStatus("Creating room…");
@@ -89,7 +126,7 @@ async function createRoom() {
     try {
         const data = await api("/api/rooms", {
             method: "POST",
-            body: JSON.stringify({ helpText, sender: username, ownerToken })
+            body: JSON.stringify({ helpText, identityToken, ownerToken })
         });
         ownerTokens[data.room.code] = ownerToken;
         saveOwnerTokens();
@@ -264,7 +301,7 @@ function renderMessages(messages) {
 async function sendMessage() {
     const input = document.getElementById("chatInput");
     const text = input.value.trim();
-    if (!text || !currentRoom || isSending) return;
+    if (!text || !currentRoom || !username || isSending || sitePaused) return;
 
     isSending = true;
     document.getElementById("chatStatus").textContent = "Sending…";
@@ -272,7 +309,7 @@ async function sendMessage() {
     try {
         await api(`/api/rooms/${encodeURIComponent(currentRoom)}/messages`, {
             method: "POST",
-            body: JSON.stringify({ sender: username, text })
+            body: JSON.stringify({ identityToken, text })
         });
         input.value = "";
         await loadCurrentRoom();
@@ -372,4 +409,8 @@ setInterval(() => {
     }
 }, 2000);
 
+setInterval(loadSiteConfig, 15000);
+
 loadRooms();
+loadSiteConfig();
+loadIdentity();

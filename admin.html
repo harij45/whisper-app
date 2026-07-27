@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#12002b">
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <title>Whisper Admin</title>
+    <link rel="icon" type="image/png" sizes="64x64" href="favicon.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="adminBody">
+
+<main class="container adminPanel">
+    <header class="adminHeader">
+        <img src="logo.png" class="adminLogo" alt="Whisper">
+        <div>
+            <p class="adminEyebrow">Private control panel</p>
+            <h1>Site Admin</h1>
+        </div>
+        <a href="/" class="adminSiteLink">View site</a>
+    </header>
+
+    <p id="adminStatus" class="status adminStatus" role="status" aria-live="polite"></p>
+
+    <section class="adminSection" aria-labelledby="siteControlsHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">Public status</p>
+                <h2 id="siteControlsHeading">Site controls</h2>
+            </div>
+            <span id="siteStateBadge" class="stateBadge">Loading</span>
+        </div>
+
+        <label for="siteNotice">Notice shown on the main site</label>
+        <textarea
+            id="siteNotice"
+            maxlength="500"
+            placeholder="Leave empty to hide the notice"
+        ></textarea>
+        <div class="adminButtonRow">
+            <button id="togglePauseBtn" type="button" class="secondaryBtn" aria-pressed="false">
+                Pause rooms and messages
+            </button>
+            <button id="saveSettingsBtn" type="button">Save site settings</button>
+        </div>
+    </section>
+
+    <section class="adminSection" aria-labelledby="statsHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">At a glance</p>
+                <h2 id="statsHeading">Activity</h2>
+            </div>
+            <button id="refreshAdminBtn" type="button" class="secondaryBtn">Refresh</button>
+        </div>
+        <div id="adminStats" class="adminStats"></div>
+    </section>
+
+    <section class="adminSection" aria-labelledby="roomsHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">Moderation</p>
+                <h2 id="roomsHeading">Rooms</h2>
+            </div>
+            <button id="clearAllReportsBtn" type="button" class="secondaryBtn">
+                Clear all reports
+            </button>
+        </div>
+
+        <label for="adminRoomSearch" class="srOnly">Search room code or text</label>
+        <input
+            id="adminRoomSearch"
+            type="search"
+            maxlength="500"
+            autocomplete="off"
+            placeholder="Search room code or text"
+        >
+        <div id="adminRooms" class="adminRooms"></div>
+    </section>
+
+    <section id="roomDetailSection" class="adminSection hidden" aria-labelledby="roomDetailHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">Room detail</p>
+                <h2 id="roomDetailHeading">Room</h2>
+            </div>
+            <button id="closeRoomDetailBtn" type="button" class="secondaryBtn">Close detail</button>
+        </div>
+        <p id="roomDetailText" class="adminRoomHelp"></p>
+        <div class="adminButtonRow">
+            <button id="clearRoomReportsBtn" type="button" class="secondaryBtn">
+                Clear this room’s reports
+            </button>
+            <button id="deleteSelectedRoomBtn" type="button" class="dangerBtn">
+                Delete this room
+            </button>
+        </div>
+        <div id="adminMessages" class="adminMessages"></div>
+    </section>
+
+    <section class="adminSection dangerZone" aria-labelledby="dangerHeading">
+        <p class="adminEyebrow">Use carefully</p>
+        <h2 id="dangerHeading">Danger zone</h2>
+        <p>Delete every live room and message. Anonymous names are kept reserved.</p>
+        <button id="deleteAllRoomsBtn" type="button" class="dangerBtn">Delete all rooms</button>
+    </section>
+</main>
+
+<script src="admin.js"></script>
+</body>
+</html>

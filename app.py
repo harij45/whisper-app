@@ -32,12 +32,27 @@ TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "").strip()
 TURNSTILE_VERIFY_ENDPOINT = (
     "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 )
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 SQLITE_PATH = os.environ.get(
     "SQLITE_PATH", os.path.join(app.root_path, "data", "whisper.db")
 )
 ROOM_TTL_MS = 24 * 60 * 60 * 1000
 FEEDBACK_TTL_MS = 30 * 24 * 60 * 60 * 1000
 MAX_MESSAGES_PER_ROOM = 500
+ALIAS_ADJECTIVES = (
+    "Amber", "Arctic", "Ashen", "Azure", "Brave", "Bright", "Calm", "Cedar",
+    "Cosmic", "Crimson", "Daring", "Dawn", "Deep", "Ember", "Frost", "Gentle",
+    "Golden", "Hidden", "Indigo", "Lunar", "Misty", "Neon", "Noble", "Quiet",
+    "Rapid", "Silver", "Solar", "Still", "Storm", "Swift", "Velvet", "Wild",
+)
+ALIAS_ANIMALS = (
+    "Badger", "Bear", "Cobra", "Coyote", "Crane", "Crow", "Dolphin", "Eagle",
+    "Falcon", "Ferret", "Fox", "Gecko", "Heron", "Jackal", "Kestrel", "Koala",
+    "Lynx", "Manta", "Marten", "Otter", "Owl", "Panda", "Panther", "Raven",
+    "Seal", "Shark", "Sparrow", "Tiger", "Viper", "Whale", "Wolf", "Wren",
+)
+ALIAS_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 _rate_buckets = defaultdict(deque)
 _rate_lock = Lock()
@@ -138,8 +153,23 @@ def init_database():
     feedback_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     )
+    identity_id = (
+        "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    )
 
     with database() as connection:
+        execute(
+            connection,
+            f"""
+            CREATE TABLE IF NOT EXISTS identities (
+                id {identity_id},
+                token_hash VARCHAR(64) NOT NULL UNIQUE,
+                alias VARCHAR(40) NOT NULL UNIQUE,
+                created_at BIGINT NOT NULL,
+                last_seen BIGINT NOT NULL
+            )
+            """,
+        )
         execute(
             connection,
             f"""
@@ -188,6 +218,34 @@ def init_database():
         )
         execute(
             connection,
+            """
+            CREATE TABLE IF NOT EXISTS site_settings (
+                key VARCHAR(50) PRIMARY KEY,
+                value VARCHAR(1000) NOT NULL,
+                updated_at BIGINT NOT NULL
+            )
+            """,
+        )
+        execute(
+            connection,
+            """
+            INSERT INTO site_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            ("site_notice", "", now_ms()),
+        )
+        execute(
+            connection,
+            """
+            INSERT INTO site_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            ("site_paused", "0", now_ms()),
+        )
+        execute(
+            connection,
             "CREATE INDEX IF NOT EXISTS messages_room_code_id "
             "ON messages(room_code, id)",
         )
@@ -198,6 +256,11 @@ def init_database():
         execute(
             connection,
             "CREATE INDEX IF NOT EXISTS feedback_created_at ON feedback(created_at)",
+        )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS identities_last_seen "
+            "ON identities(last_seen)",
         )
 
 
@@ -228,6 +291,194 @@ def clean_text(value, maximum):
     if not isinstance(value, str):
         return ""
     return value.strip()[:maximum]
+
+
+def secure_equal(first, second):
+    return hmac.compare_digest(
+        str(first).encode("utf-8"),
+        str(second).encode("utf-8"),
+    )
+
+
+def get_site_setting(connection, key, default=""):
+    row = execute(
+        connection,
+        "SELECT value FROM site_settings WHERE key = ?",
+        (key,),
+    ).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_site_setting(connection, key, value):
+    execute(
+        connection,
+        """
+        INSERT INTO site_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (key) DO UPDATE
+        SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (key, value, now_ms()),
+    )
+
+
+def get_site_config(connection):
+    return {
+        "notice": get_site_setting(connection, "site_notice", ""),
+        "paused": get_site_setting(connection, "site_paused", "0") == "1",
+    }
+
+
+def delete_room_data(connection, room_code):
+    execute(connection, "DELETE FROM reports WHERE room_code = ?", (room_code,))
+    execute(connection, "DELETE FROM messages WHERE room_code = ?", (room_code,))
+    return execute(connection, "DELETE FROM rooms WHERE code = ?", (room_code,))
+
+
+def admin_auth_response(status=401):
+    message = (
+        "Admin access is not configured. Add an ADMIN_PASSWORD of at least "
+        "16 characters in Render."
+        if status == 503
+        else "Admin authentication required."
+    )
+    response = jsonify({"error": message})
+    response.status_code = status
+    if status == 401:
+        response.headers["WWW-Authenticate"] = (
+            'Basic realm="Whisper Admin", charset="UTF-8"'
+        )
+    return response
+
+
+def admin_auth_failure_response():
+    address = request.remote_addr or "unknown"
+    visitor = hashlib.sha256(
+        _rate_salt + address.encode("utf-8")
+    ).hexdigest()
+    key = ("admin_auth_failures", visitor)
+    current = time.monotonic()
+    window_seconds = 15 * 60
+
+    with _rate_lock:
+        bucket = _rate_buckets[key]
+        while bucket and bucket[0] <= current - window_seconds:
+            bucket.popleft()
+        if len(bucket) >= 10:
+            retry_after = max(
+                1,
+                math.ceil(bucket[0] + window_seconds - current),
+            )
+            response = jsonify(
+                {"error": "Too many failed admin sign-in attempts."}
+            )
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        bucket.append(current)
+
+    return admin_auth_response()
+
+
+def admin_required(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if len(ADMIN_PASSWORD) < 16:
+            return admin_auth_response(503)
+
+        authorization = request.authorization
+        username = authorization.username if authorization else ""
+        password = authorization.password if authorization else ""
+        if not (
+            secure_equal(username, ADMIN_USERNAME)
+            and secure_equal(password, ADMIN_PASSWORD)
+        ):
+            return admin_auth_failure_response()
+        return function(*args, **kwargs)
+
+    return wrapped
+
+
+def admin_action_required(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if request.headers.get("X-Admin-Action") != "Whisper-Admin":
+            return jsonify({"error": "Invalid admin action request."}), 403
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":
+            return jsonify({"error": "Cross-site admin actions are blocked."}), 403
+
+        origin = request.headers.get("Origin")
+        if origin and not secure_equal(origin.rstrip("/"), request.host_url.rstrip("/")):
+            return jsonify({"error": "Admin action origin does not match."}), 403
+        return function(*args, **kwargs)
+
+    return wrapped
+
+
+def generate_alias():
+    adjective = secrets.choice(ALIAS_ADJECTIVES)
+    animal = secrets.choice(ALIAS_ANIMALS)
+    suffix = "".join(secrets.choice(ALIAS_ALPHABET) for _ in range(8))
+    return f"{adjective}{animal}-{suffix}"
+
+
+def find_identity_alias(connection, identity_token):
+    if len(identity_token) < 20:
+        return None
+    identity = execute(
+        connection,
+        "SELECT alias FROM identities WHERE token_hash = ?",
+        (hash_token(identity_token),),
+    ).fetchone()
+    return identity["alias"] if identity is not None else None
+
+
+def reserve_identity(connection, identity_token):
+    token_hash = hash_token(identity_token)
+    timestamp = now_ms()
+    existing_alias = find_identity_alias(connection, identity_token)
+    if existing_alias:
+        execute(
+            connection,
+            "UPDATE identities SET last_seen = ? WHERE token_hash = ?",
+            (timestamp, token_hash),
+        )
+        return existing_alias
+
+    for _attempt in range(20):
+        alias = generate_alias()
+        if IS_POSTGRES:
+            inserted = execute(
+                connection,
+                """
+                INSERT INTO identities
+                    (token_hash, alias, created_at, last_seen)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                RETURNING alias
+                """,
+                (token_hash, alias, timestamp, timestamp),
+            ).fetchone()
+            if inserted is not None:
+                return inserted["alias"]
+        else:
+            inserted = execute(
+                connection,
+                """
+                INSERT OR IGNORE INTO identities
+                    (token_hash, alias, created_at, last_seen)
+                VALUES (?, ?, ?, ?)
+                """,
+                (token_hash, alias, timestamp, timestamp),
+            )
+            if inserted.rowcount == 1:
+                return alias
+
+        existing_alias = find_identity_alias(connection, identity_token)
+        if existing_alias:
+            return existing_alias
+
+    raise RuntimeError("Could not reserve a unique alias.")
 
 
 def deliver_feedback(text):
@@ -339,8 +590,10 @@ def add_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
-    if request.path.startswith("/api/"):
+    if request.path.startswith("/api/") or request.path == "/admin":
         response.headers["Cache-Control"] = "no-store, max-age=0"
+    if request.path == "/admin" or request.path.startswith("/api/admin/"):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     if request.is_secure:
         response.headers["Strict-Transport-Security"] = (
             "max-age=31536000; includeSubDomains"
@@ -360,6 +613,12 @@ def index():
     return send_from_directory(app.root_path, "index.html")
 
 
+@app.get("/admin")
+@admin_required
+def admin_page():
+    return send_from_directory(app.root_path, "admin.html")
+
+
 @app.get("/favicon.ico")
 def favicon():
     return send_from_directory(app.root_path, "favicon.png", mimetype="image/png")
@@ -373,6 +632,7 @@ def static_file(filename):
         "style.css",
         "script.js",
         "feedback.js",
+        "admin.js",
         "logo.png",
         "report.png",
         "favicon.png",
@@ -388,12 +648,35 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.get("/api/site-config")
+@rate_limit(120, 60)
+def site_config():
+    with database() as connection:
+        config = get_site_config(connection)
+    return jsonify(config)
+
+
 @app.get("/api/turnstile-config")
 @rate_limit(120, 60)
 def turnstile_config():
     if not TURNSTILE_SITE_KEY or not TURNSTILE_SECRET_KEY:
         return jsonify({"error": "Spam protection is not configured yet."}), 503
     return jsonify({"siteKey": TURNSTILE_SITE_KEY})
+
+
+@app.post("/api/identity")
+@rate_limit(60, 3600)
+def assign_identity():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    identity_token = clean_text(data.get("identityToken"), 200)
+    if len(identity_token) < 20:
+        return jsonify({"error": "A valid identity token is required."}), 400
+
+    with database() as connection:
+        alias = reserve_identity(connection, identity_token)
+    return jsonify({"alias": alias})
 
 
 @app.get("/api/rooms")
@@ -412,12 +695,19 @@ def list_rooms():
 @rate_limit(6, 60)
 def create_room():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     help_text = clean_text(data.get("helpText"), 500)
-    sender = clean_text(data.get("sender"), 40)
+    identity_token = clean_text(data.get("identityToken"), 200)
     owner_token = clean_text(data.get("ownerToken"), 200)
 
-    if not help_text or not sender or len(owner_token) < 20:
-        return jsonify({"error": "Room text, sender, and owner token are required."}), 400
+    if not help_text or len(identity_token) < 20 or len(owner_token) < 20:
+        return (
+            jsonify(
+                {"error": "Room text, identity token, and owner token are required."}
+            ),
+            400,
+        )
 
     created_at = now_ms()
     alphabet = string.ascii_uppercase + string.digits
@@ -426,6 +716,21 @@ def create_room():
 
     with database() as connection:
         purge_expired_content(connection)
+        if get_site_setting(connection, "site_paused", "0") == "1":
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Whisper is temporarily paused. New rooms cannot "
+                            "be created right now."
+                        )
+                    }
+                ),
+                503,
+            )
+        sender = find_identity_alias(connection, identity_token)
+        if sender is None:
+            return jsonify({"error": "Refresh the page to restore your identity."}), 401
         execute(
             connection,
             """
@@ -496,15 +801,32 @@ def get_room(room_code):
 def add_message(room_code):
     room_code = room_code.upper()
     data = request.get_json(silent=True) or {}
-    sender = clean_text(data.get("sender"), 40)
+    if not isinstance(data, dict):
+        data = {}
+    identity_token = clean_text(data.get("identityToken"), 200)
     text = clean_text(data.get("text"), 1000)
 
-    if not sender or not text:
-        return jsonify({"error": "Sender and message are required."}), 400
+    if len(identity_token) < 20 or not text:
+        return jsonify({"error": "Identity token and message are required."}), 400
 
     created_at = now_ms()
     with database() as connection:
         purge_expired_content(connection)
+        if get_site_setting(connection, "site_paused", "0") == "1":
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Whisper is temporarily paused. Messages cannot "
+                            "be sent right now."
+                        )
+                    }
+                ),
+                503,
+            )
+        sender = find_identity_alias(connection, identity_token)
+        if sender is None:
+            return jsonify({"error": "Refresh the page to restore your identity."}), 401
         room = execute(
             connection, "SELECT code FROM rooms WHERE code = ?", (room_code,)
         ).fetchone()
@@ -577,9 +899,7 @@ def delete_room(room_code):
         ):
             return jsonify({"error": "Only the room creator can close this room."}), 403
 
-        execute(connection, "DELETE FROM reports WHERE room_code = ?", (room_code,))
-        execute(connection, "DELETE FROM messages WHERE room_code = ?", (room_code,))
-        execute(connection, "DELETE FROM rooms WHERE code = ?", (room_code,))
+        delete_room_data(connection, room_code)
 
     return ("", 204)
 
@@ -646,6 +966,188 @@ def submit_feedback():
         )
 
     return jsonify({"submitted": True}), 201
+
+
+@app.get("/api/admin/overview")
+@rate_limit(180, 60)
+@admin_required
+def admin_overview():
+    with database() as connection:
+        purge_expired_content(connection)
+        stats = {}
+        for label, table in (
+            ("rooms", "rooms"),
+            ("messages", "messages"),
+            ("identities", "identities"),
+            ("reports", "reports"),
+        ):
+            stats[label] = execute(
+                connection,
+                f"SELECT COUNT(*) AS count FROM {table}",
+            ).fetchone()["count"]
+
+        room_rows = execute(
+            connection,
+            """
+            SELECT
+                rooms.code,
+                rooms.help_text,
+                rooms.created_at,
+                (SELECT COUNT(*) FROM messages
+                    WHERE messages.room_code = rooms.code) AS message_count,
+                (SELECT COUNT(*) FROM reports
+                    WHERE reports.room_code = rooms.code) AS report_count
+            FROM rooms
+            ORDER BY rooms.created_at DESC
+            LIMIT 200
+            """,
+        ).fetchall()
+        config = get_site_config(connection)
+
+    rooms = [
+        {
+            "code": row["code"],
+            "help": row["help_text"],
+            "createdAt": row["created_at"],
+            "messageCount": row["message_count"],
+            "reportCount": row["report_count"],
+        }
+        for row in room_rows
+    ]
+    return jsonify({"stats": stats, "rooms": rooms, "config": config})
+
+
+@app.get("/api/admin/rooms/<room_code>")
+@rate_limit(180, 60)
+@admin_required
+def admin_room_detail(room_code):
+    room_code = room_code.upper()
+    if len(room_code) != 8 or not room_code.isalnum():
+        return jsonify({"error": "Invalid room code."}), 400
+
+    with database() as connection:
+        purge_expired_content(connection)
+        room = execute(
+            connection,
+            "SELECT code, help_text, created_at FROM rooms WHERE code = ?",
+            (room_code,),
+        ).fetchone()
+        if room is None:
+            return jsonify({"error": "Room not found."}), 404
+        messages = execute(
+            connection,
+            """
+            SELECT id, sender, text, created_at
+            FROM messages
+            WHERE room_code = ?
+            ORDER BY id
+            """,
+            (room_code,),
+        ).fetchall()
+        report_count = execute(
+            connection,
+            "SELECT COUNT(*) AS count FROM reports WHERE room_code = ?",
+            (room_code,),
+        ).fetchone()["count"]
+
+    return jsonify(
+        {
+            "room": public_room(room),
+            "messages": [public_message(message) for message in messages],
+            "reportCount": report_count,
+        }
+    )
+
+
+@app.delete("/api/admin/rooms/<room_code>")
+@rate_limit(60, 60)
+@admin_required
+@admin_action_required
+def admin_delete_room(room_code):
+    room_code = room_code.upper()
+    if len(room_code) != 8 or not room_code.isalnum():
+        return jsonify({"error": "Invalid room code."}), 400
+
+    with database() as connection:
+        deleted = delete_room_data(connection, room_code)
+        if deleted.rowcount == 0:
+            return jsonify({"error": "Room not found."}), 404
+    return ("", 204)
+
+
+@app.delete("/api/admin/messages/<int:message_id>")
+@rate_limit(120, 60)
+@admin_required
+@admin_action_required
+def admin_delete_message(message_id):
+    with database() as connection:
+        deleted = execute(
+            connection,
+            "DELETE FROM messages WHERE id = ?",
+            (message_id,),
+        )
+        if deleted.rowcount == 0:
+            return jsonify({"error": "Message not found."}), 404
+    return ("", 204)
+
+
+@app.delete("/api/admin/reports")
+@rate_limit(30, 60)
+@admin_required
+@admin_action_required
+def admin_clear_reports():
+    data = request.get_json(silent=True) or {}
+    room_code = clean_text(data.get("roomCode"), 8).upper()
+
+    with database() as connection:
+        if room_code:
+            if len(room_code) != 8 or not room_code.isalnum():
+                return jsonify({"error": "Invalid room code."}), 400
+            execute(
+                connection,
+                "DELETE FROM reports WHERE room_code = ?",
+                (room_code,),
+            )
+        else:
+            execute(connection, "DELETE FROM reports")
+    return ("", 204)
+
+
+@app.put("/api/admin/settings")
+@rate_limit(30, 60)
+@admin_required
+@admin_action_required
+def admin_update_settings():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid settings."}), 400
+
+    notice = clean_text(data.get("notice"), 500)
+    paused = data.get("paused")
+    if not isinstance(paused, bool):
+        return jsonify({"error": "Paused must be true or false."}), 400
+
+    with database() as connection:
+        set_site_setting(connection, "site_notice", notice)
+        set_site_setting(connection, "site_paused", "1" if paused else "0")
+        config = get_site_config(connection)
+    return jsonify(config)
+
+
+@app.delete("/api/admin/rooms")
+@rate_limit(3, 3600)
+@admin_required
+@admin_action_required
+def admin_delete_all_rooms():
+    data = request.get_json(silent=True) or {}
+    if data.get("confirmation") != "DELETE ALL ROOMS":
+        return jsonify({"error": "The confirmation text did not match."}), 400
+
+    with database() as connection:
+        execute(connection, "DELETE FROM reports")
+        execute(connection, "DELETE FROM messages")
+        execute(connection, "DELETE FROM rooms")
+    return ("", 204)
 
 
 init_database()
