@@ -221,6 +221,33 @@ def ensure_identity_ip_columns(connection):
             )
 
 
+def banned_ip_alias_column_exists(connection):
+    if IS_POSTGRES:
+        row = execute(
+            connection,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'banned_ips'
+              AND column_name = ?
+            """,
+            ("alias",),
+        ).fetchone()
+        return row is not None
+
+    columns = execute(connection, "PRAGMA table_info(banned_ips)").fetchall()
+    return any(column["name"] == "alias" for column in columns)
+
+
+def ensure_banned_ip_alias_column(connection):
+    if not banned_ip_alias_column_exists(connection):
+        execute(
+            connection,
+            "ALTER TABLE banned_ips ADD COLUMN alias VARCHAR(40)",
+        )
+
+
 def init_database():
     room_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -321,11 +348,13 @@ def init_database():
                 id {ban_id},
                 ip_hash VARCHAR(64) NOT NULL UNIQUE,
                 ip_encrypted TEXT NOT NULL,
+                alias VARCHAR(40),
                 reason VARCHAR(500) NOT NULL,
                 created_at BIGINT NOT NULL
             )
             """,
         )
+        ensure_banned_ip_alias_column(connection)
         execute(
             connection,
             """
@@ -617,10 +646,8 @@ def reject_banned_ip(connection, address):
     return (
         jsonify(
             {
-                "error": (
-                    "Access from this network has been blocked by the site "
-                    "administrator."
-                )
+                "error": "You have been blocked.",
+                "code": "IP_BLOCKED",
             }
         ),
         403,
@@ -1330,13 +1357,16 @@ def admin_overview():
             SELECT
                 banned_ips.id,
                 banned_ips.ip_encrypted,
+                COALESCE(
+                    banned_ips.alias,
+                    (
+                        SELECT MIN(identities.alias)
+                        FROM identities
+                        WHERE identities.ip_hash = banned_ips.ip_hash
+                    )
+                ) AS alias,
                 banned_ips.reason,
-                banned_ips.created_at,
-                (
-                    SELECT MIN(identities.alias)
-                    FROM identities
-                    WHERE identities.ip_hash = banned_ips.ip_hash
-                ) AS alias
+                banned_ips.created_at
             FROM banned_ips
             ORDER BY banned_ips.created_at DESC
             """,
@@ -1489,17 +1519,19 @@ def admin_ban_identity():
             connection,
             """
             INSERT INTO banned_ips
-                (ip_hash, ip_encrypted, reason, created_at)
-            VALUES (?, ?, ?, ?)
+                (ip_hash, ip_encrypted, alias, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (ip_hash) DO UPDATE
             SET
                 ip_encrypted = excluded.ip_encrypted,
+                alias = excluded.alias,
                 reason = excluded.reason,
                 created_at = excluded.created_at
             """,
             (
                 identity["ip_hash"],
                 identity["ip_encrypted"],
+                identity["alias"],
                 reason,
                 now_ms(),
             ),

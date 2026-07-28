@@ -69,7 +69,7 @@ function renderStats() {
         ["messages", "Messages"],
         ["identities", "Reserved names"],
         ["reports", "Reports"],
-        ["bans", "IP bans"]
+        ["bans", "Bans"]
     ];
     stats.replaceChildren();
 
@@ -136,6 +136,70 @@ function renderRooms() {
     });
 }
 
+function renderReportedRooms() {
+    const list = document.getElementById("adminReportedRooms");
+    const count = document.getElementById("reportedRoomsCount");
+    const reportedRooms = adminOverview.rooms
+        .filter(room => room.reportCount > 0)
+        .sort((first, second) =>
+            second.reportCount - first.reportCount
+            || second.createdAt - first.createdAt
+        );
+    const totalReports = adminOverview.stats.reports;
+
+    count.textContent = `${totalReports} ${totalReports === 1 ? "report" : "reports"}`;
+    count.classList.toggle("paused", totalReports > 0);
+    list.replaceChildren();
+
+    if (!reportedRooms.length) {
+        const empty = document.createElement("p");
+        empty.className = "adminEmpty";
+        empty.textContent = "No reported rooms.";
+        list.appendChild(empty);
+        return;
+    }
+
+    reportedRooms.forEach(room => {
+        const row = document.createElement("article");
+        row.className = "adminRoom";
+
+        const info = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = room.code;
+        const help = document.createElement("p");
+        help.textContent = room.help;
+        const meta = document.createElement("span");
+        const reportLabel = room.reportCount === 1 ? "report" : "reports";
+        meta.textContent =
+            `${room.reportCount} ${reportLabel} · `
+            + `${room.messageCount} messages · `
+            + formatAdminDate(room.createdAt);
+        info.append(title, help, meta);
+
+        const actions = document.createElement("div");
+        actions.className = "adminRoomActions";
+        const reviewButton = document.createElement("button");
+        reviewButton.type = "button";
+        reviewButton.className = "secondaryBtn";
+        reviewButton.textContent = "Review";
+        reviewButton.addEventListener("click", () => loadAdminRoom(room.code));
+        const clearButton = document.createElement("button");
+        clearButton.type = "button";
+        clearButton.className = "secondaryBtn";
+        clearButton.textContent = "Clear";
+        clearButton.addEventListener("click", () => clearReports(room.code));
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "dangerBtn";
+        deleteButton.textContent = "Delete";
+        deleteButton.addEventListener("click", () => deleteAdminRoom(room.code));
+        actions.append(reviewButton, clearButton, deleteButton);
+
+        row.append(info, actions);
+        list.appendChild(row);
+    });
+}
+
 function renderBans() {
     const list = document.getElementById("adminBans");
     const status = document.getElementById("ipModerationStatus");
@@ -152,7 +216,7 @@ function renderBans() {
     if (!adminOverview.bans.length) {
         const empty = document.createElement("p");
         empty.className = "adminEmpty";
-        empty.textContent = "No active IP bans.";
+        empty.textContent = "No active bans.";
         list.appendChild(empty);
         return;
     }
@@ -162,11 +226,13 @@ function renderBans() {
         row.className = "adminBan";
         const info = document.createElement("div");
         const address = document.createElement("strong");
-        address.textContent = ban.ipAddress || "Encrypted address unavailable";
+        address.textContent = ban.ipAddress
+            ? `IP address: ${ban.ipAddress}`
+            : "IP address: unavailable";
         const alias = document.createElement("p");
         alias.textContent = ban.alias
-            ? `Most recent name: ${ban.alias}`
-            : "No current name is linked";
+            ? `Username: ${ban.alias}`
+            : "Username: unavailable";
         const reason = document.createElement("p");
         reason.textContent = `Reason: ${ban.reason}`;
         const date = document.createElement("span");
@@ -191,6 +257,7 @@ async function loadAdminOverview(showMessage = false) {
         document.getElementById("siteNotice").value = data.config.notice;
         renderSiteState();
         renderStats();
+        renderReportedRooms();
         renderRooms();
         renderBans();
         if (showMessage) setAdminStatus("Dashboard refreshed.");
@@ -307,7 +374,7 @@ async function banIdentity(message) {
 }
 
 async function removeBan(banId, refreshRoom = false) {
-    if (!confirm("Remove this IP ban?")) return;
+    if (!confirm("Remove this ban?")) return;
     try {
         await adminApi(`/api/admin/bans/${banId}`, {
             method: "DELETE"
@@ -316,7 +383,7 @@ async function removeBan(banId, refreshRoom = false) {
         if (refreshRoom && selectedRoomCode) {
             await loadAdminRoom(selectedRoomCode);
         }
-        setAdminStatus("IP ban removed.");
+        setAdminStatus("Ban removed.");
     } catch (error) {
         setAdminStatus(error.message, true);
     }

@@ -5,6 +5,8 @@ let username = null;
 let currentRoomPage = 1;
 let roomSearchQuery = "";
 let sitePaused = false;
+let isBlocked = false;
+const blockedMessage = "You have been blocked.";
 const roomsPerPage = 15;
 const ownerTokens = JSON.parse(localStorage.getItem("whisperOwnerTokens") || "{}");
 let identityToken = localStorage.getItem("whisperIdentityToken");
@@ -47,13 +49,18 @@ async function api(path, options = {}) {
 
     if (!response.ok) {
         let message = "Something went wrong. Please try again.";
+        let code = "";
         try {
             const body = await response.json();
             message = body.error || message;
+            code = body.code || "";
         } catch {
             // Keep the friendly fallback when the server returns no JSON.
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status;
+        error.code = code;
+        throw error;
     }
 
     return response.status === 204 ? null : response.json();
@@ -61,13 +68,33 @@ async function api(path, options = {}) {
 
 function setStatus(message, isError = false) {
     const status = document.getElementById("status");
+    if (isBlocked) {
+        message = blockedMessage;
+        isError = true;
+    }
     status.textContent = message;
     status.classList.toggle("error", isError);
 }
 
+function handleBlockedError(error) {
+    if (error.code !== "IP_BLOCKED") return false;
+
+    isBlocked = true;
+    username = null;
+    updateActionAvailability();
+    setStatus(blockedMessage, true);
+
+    if (currentRoom) {
+        document.getElementById("chatStatus").textContent = blockedMessage;
+    }
+    return true;
+}
+
 function updateActionAvailability() {
-    document.getElementById("startRoomBtn").disabled = !username || sitePaused;
-    document.getElementById("sendMessageBtn").disabled = !username || sitePaused;
+    document.getElementById("startRoomBtn").disabled =
+        !username || sitePaused || isBlocked;
+    document.getElementById("sendMessageBtn").disabled =
+        !username || sitePaused || isBlocked;
 }
 
 async function loadSiteConfig() {
@@ -110,7 +137,12 @@ async function loadIdentity() {
         username = data.alias;
         updateActionAvailability();
     } catch (error) {
-        setStatus(`Could not reserve your anonymous name: ${error.message}`, true);
+        if (!handleBlockedError(error)) {
+            setStatus(
+                `Could not reserve your anonymous name: ${error.message}`,
+                true
+            );
+        }
     }
 }
 
@@ -134,7 +166,9 @@ async function createRoom() {
         rooms[data.room.code] = data.room;
         await joinRoom(data.room.code);
     } catch (error) {
-        setStatus(error.message, true);
+        if (!handleBlockedError(error)) {
+            setStatus(error.message, true);
+        }
     } finally {
         isSending = false;
     }
@@ -248,7 +282,8 @@ async function loadCurrentRoom() {
         const data = await api(`/api/rooms/${encodeURIComponent(requestedRoom)}`);
         if (currentRoom !== requestedRoom) return;
         renderMessages(data.messages);
-        document.getElementById("chatStatus").textContent = "";
+        document.getElementById("chatStatus").textContent =
+            isBlocked ? blockedMessage : "";
     } catch (error) {
         if (currentRoom !== requestedRoom) return;
         if (error.message === "Room not found.") {
@@ -314,7 +349,9 @@ async function sendMessage() {
         input.value = "";
         await loadCurrentRoom();
     } catch (error) {
-        document.getElementById("chatStatus").textContent = error.message;
+        if (!handleBlockedError(error)) {
+            document.getElementById("chatStatus").textContent = error.message;
+        }
     } finally {
         isSending = false;
     }

@@ -61,15 +61,31 @@
         <div id="adminStats" class="adminStats"></div>
     </section>
 
-    <section class="adminSection" aria-labelledby="roomsHeading">
+    <section class="adminSection" aria-labelledby="reportedRoomsHeading">
         <div class="adminSectionHeading">
             <div>
-                <p class="adminEyebrow">Moderation</p>
-                <h2 id="roomsHeading">Rooms</h2>
+                <p class="adminEyebrow">Moderation queue</p>
+                <h2 id="reportedRoomsHeading">Reported Rooms</h2>
             </div>
+            <span id="reportedRoomsCount" class="stateBadge">Loading</span>
+        </div>
+        <p class="adminPrivacyNote">
+            Rooms reported by visitors appear here for review.
+        </p>
+        <div id="adminReportedRooms" class="adminRooms"></div>
+        <div class="adminButtonRow">
             <button id="clearAllReportsBtn" type="button" class="secondaryBtn">
                 Clear all reports
             </button>
+        </div>
+    </section>
+
+    <section class="adminSection" aria-labelledby="roomsHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">All live content</p>
+                <h2 id="roomsHeading">All Rooms</h2>
+            </div>
         </div>
 
         <label for="adminRoomSearch" class="srOnly">Search room code or text</label>
@@ -106,13 +122,18 @@
     <section class="adminSection" aria-labelledby="bansHeading">
         <div class="adminSectionHeading">
             <div>
-                <p class="adminEyebrow">Network moderation</p>
-                <h2 id="bansHeading">IP bans</h2>
+                <p class="adminEyebrow">User moderation</p>
+                <h2 id="bansHeading">Bans</h2>
             </div>
         </div>
         <p id="ipModerationStatus" class="adminPrivacyNote"></p>
         <p class="adminPrivacyNote">
-            IP bans can affect multiple people sharing one network and can be bypassed by changing networks.
+            Each ban records the site-generated username and an encrypted recent
+            IP address. Websites cannot access a visitor’s MAC address.
+        </p>
+        <p class="adminPrivacyNote">
+            IP-based bans can affect multiple people sharing one network and can
+            be bypassed by changing networks.
         </p>
         <div id="adminBans" class="adminBans"></div>
     </section>
