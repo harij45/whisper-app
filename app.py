@@ -46,6 +46,7 @@ TURNSTILE_VERIFY_ENDPOINT = (
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 IP_PRIVACY_KEY = os.environ.get("IP_PRIVACY_KEY", "")
+MIN_IP_PRIVACY_KEY_LENGTH = 16
 SQLITE_PATH = os.environ.get(
     "SQLITE_PATH", os.path.join(app.root_path, "data", "whisper.db")
 )
@@ -560,7 +561,7 @@ def migrate_legacy_aliases(connection):
 
 
 def ip_privacy_enabled():
-    return len(IP_PRIVACY_KEY) >= 32
+    return len(IP_PRIVACY_KEY) >= MIN_IP_PRIVACY_KEY_LENGTH
 
 
 def ip_hash(address):
@@ -1444,8 +1445,9 @@ def admin_ban_identity():
             jsonify(
                 {
                     "error": (
-                        "IP moderation is not configured. Add IP_PRIVACY_KEY "
-                        "in Render first."
+                        "IP moderation is not configured. Add an "
+                        "IP_PRIVACY_KEY of at least 16 characters in Render "
+                        "first."
                     )
                 }
             ),
