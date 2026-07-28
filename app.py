@@ -1020,8 +1020,12 @@ def assign_identity():
 @app.get("/api/rooms")
 @rate_limit(120, 60)
 def list_rooms():
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         rows = execute(
             connection,
             "SELECT code, help_text, created_at FROM rooms ORDER BY created_at DESC",
@@ -1110,8 +1114,12 @@ def create_room():
 @rate_limit(120, 60)
 def get_room(room_code):
     room_code = room_code.upper()
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         room = execute(
             connection,
             "SELECT code, help_text, created_at FROM rooms WHERE code = ?",
@@ -1233,8 +1241,12 @@ def delete_room(room_code):
     data = request.get_json(silent=True) or {}
     owner_token = clean_text(data.get("ownerToken"), 200)
 
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         room = execute(
             connection,
             "SELECT owner_token_hash FROM rooms WHERE code = ?",
@@ -1256,8 +1268,12 @@ def delete_room(room_code):
 @rate_limit(5, 3600)
 def report_room(room_code):
     room_code = room_code.upper()
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         room = execute(
             connection, "SELECT code FROM rooms WHERE code = ?", (room_code,)
         ).fetchone()

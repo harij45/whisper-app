@@ -81,12 +81,16 @@ function handleBlockedError(error) {
 
     isBlocked = true;
     username = null;
+    currentRoom = null;
+    rooms = {};
+    document.getElementById("roomsList").replaceChildren();
+    document.getElementById("roomPagination").classList.add("hidden");
+    document.getElementById("chatMessages").replaceChildren();
+    document.getElementById("chatStatus").textContent = "";
+    document.getElementById("chatRoom").classList.add("hidden");
+    document.getElementById("home").classList.remove("hidden");
     updateActionAvailability();
     setStatus(blockedMessage, true);
-
-    if (currentRoom) {
-        document.getElementById("chatStatus").textContent = blockedMessage;
-    }
     return true;
 }
 
@@ -95,6 +99,13 @@ function updateActionAvailability() {
         !username || sitePaused || isBlocked;
     document.getElementById("sendMessageBtn").disabled =
         !username || sitePaused || isBlocked;
+    document.getElementById("helpInput").disabled = isBlocked;
+    document.getElementById("chatInput").disabled = isBlocked;
+    document.getElementById("toggleRoomSearchBtn").disabled = isBlocked;
+    document.getElementById("roomSearchInput").disabled = isBlocked;
+    document.getElementById("clearRoomSearchBtn").disabled = isBlocked;
+    document.getElementById("reportRoomBtn").disabled = isBlocked;
+    document.getElementById("closeRoomBtn").disabled = isBlocked;
 }
 
 async function loadSiteConfig() {
@@ -122,7 +133,9 @@ async function loadRooms() {
         rooms = Object.fromEntries(data.rooms.map(room => [room.code, room]));
         showRooms();
     } catch (error) {
-        setStatus(`Could not load rooms: ${error.message}`, true);
+        if (!handleBlockedError(error)) {
+            setStatus(`Could not load rooms: ${error.message}`, true);
+        }
     }
 }
 
@@ -259,6 +272,8 @@ function changeRoomPage(direction) {
 }
 
 async function joinRoom(code) {
+    if (isBlocked) return;
+
     currentRoom = code;
     const messages = document.getElementById("chatMessages");
     messages.replaceChildren();
@@ -285,6 +300,7 @@ async function loadCurrentRoom() {
         document.getElementById("chatStatus").textContent =
             isBlocked ? blockedMessage : "";
     } catch (error) {
+        if (handleBlockedError(error)) return;
         if (currentRoom !== requestedRoom) return;
         if (error.message === "Room not found.") {
             goHome();
@@ -380,7 +396,9 @@ async function closeRoom() {
         saveOwnerTokens();
         goHome();
     } catch (error) {
-        document.getElementById("chatStatus").textContent = error.message;
+        if (!handleBlockedError(error)) {
+            document.getElementById("chatStatus").textContent = error.message;
+        }
     }
 }
 
@@ -394,7 +412,9 @@ async function reportRoom() {
         });
         alert("Room reported successfully.");
     } catch (error) {
-        document.getElementById("chatStatus").textContent = error.message;
+        if (!handleBlockedError(error)) {
+            document.getElementById("chatStatus").textContent = error.message;
+        }
     }
 }
 
