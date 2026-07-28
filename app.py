@@ -1,5 +1,7 @@
+import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -15,7 +17,16 @@ from contextlib import contextmanager
 from functools import wraps
 from threading import Lock
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from cryptography.fernet import Fernet, InvalidToken
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    redirect,
+    request,
+    send_from_directory,
+    session,
+)
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 
@@ -34,11 +45,13 @@ TURNSTILE_VERIFY_ENDPOINT = (
 )
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+IP_PRIVACY_KEY = os.environ.get("IP_PRIVACY_KEY", "")
 SQLITE_PATH = os.environ.get(
     "SQLITE_PATH", os.path.join(app.root_path, "data", "whisper.db")
 )
 ROOM_TTL_MS = 24 * 60 * 60 * 1000
 FEEDBACK_TTL_MS = 30 * 24 * 60 * 60 * 1000
+IP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 MAX_MESSAGES_PER_ROOM = 500
 ALIAS_ADJECTIVES = (
     "Amber", "Arctic", "Ashen", "Azure", "Brave", "Bright", "Calm", "Cedar",
@@ -52,7 +65,28 @@ ALIAS_ANIMALS = (
     "Lynx", "Manta", "Marten", "Otter", "Owl", "Panda", "Panther", "Raven",
     "Seal", "Shark", "Sparrow", "Tiger", "Viper", "Whale", "Wolf", "Wren",
 )
-ALIAS_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+ALIAS_TRAITS = (
+    "Bold", "Calm", "Clear", "Clever", "Cool", "Daring", "Deep", "Dreaming",
+    "Free", "Gentle", "Grand", "Happy", "Hushed", "Kind", "Light", "Lucky",
+    "Mellow", "Nimble", "Noble", "Patient", "Proud", "Quick", "Quiet", "Rare",
+    "Ready", "Sharp", "Silent", "Soft", "Steady", "True", "Warm", "Wise",
+)
+ALIAS_WORLDS = (
+    "Brook", "Cloud", "Dawn", "Dusk", "Echo", "Field", "Flame", "Forest",
+    "Grove", "Harbor", "Haven", "Hill", "Lake", "Leaf", "Light", "Meadow",
+    "Moon", "Night", "Ocean", "Rain", "River", "Sky", "Snow", "Star",
+    "Stone", "Sun", "Tide", "Vale", "Wave", "Wind", "Wood", "Zenith",
+)
+
+app.secret_key = hashlib.sha256(
+    f"whisper-admin-session-v1:{ADMIN_PASSWORD}".encode("utf-8")
+).digest()
+app.config.update(
+    SESSION_COOKIE_NAME="whisper_admin_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    SESSION_COOKIE_SECURE=os.environ.get("RENDER", "").lower() == "true",
+)
 
 _rate_buckets = defaultdict(deque)
 _rate_lock = Lock()
@@ -63,6 +97,19 @@ def now_ms():
     return int(time.time() * 1000)
 
 
+def client_ip():
+    address = request.remote_addr or ""
+    if os.environ.get("RENDER", "").lower() == "true":
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            address = forwarded.split(",", 1)[0].strip()
+
+    try:
+        return ipaddress.ip_address(address).compressed
+    except ValueError:
+        return "unknown"
+
+
 def hash_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -71,7 +118,7 @@ def rate_limit(limit, window_seconds):
     def decorator(function):
         @wraps(function)
         def wrapped(*args, **kwargs):
-            address = request.remote_addr or "unknown"
+            address = client_ip()
             visitor = hashlib.sha256(
                 _rate_salt + address.encode("utf-8")
             ).hexdigest()
@@ -140,6 +187,39 @@ def execute(connection, sql, parameters=()):
     return connection.execute(sql, parameters)
 
 
+def identity_column_exists(connection, column_name):
+    if IS_POSTGRES:
+        row = execute(
+            connection,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'identities'
+              AND column_name = ?
+            """,
+            (column_name,),
+        ).fetchone()
+        return row is not None
+
+    columns = execute(connection, "PRAGMA table_info(identities)").fetchall()
+    return any(column["name"] == column_name for column in columns)
+
+
+def ensure_identity_ip_columns(connection):
+    columns = {
+        "ip_hash": "VARCHAR(64)",
+        "ip_encrypted": "TEXT",
+        "ip_last_seen": "BIGINT",
+    }
+    for name, data_type in columns.items():
+        if not identity_column_exists(connection, name):
+            execute(
+                connection,
+                f"ALTER TABLE identities ADD COLUMN {name} {data_type}",
+            )
+
+
 def init_database():
     room_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -156,6 +236,9 @@ def init_database():
     identity_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     )
+    ban_id = (
+        "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    )
 
     with database() as connection:
         execute(
@@ -166,10 +249,14 @@ def init_database():
                 token_hash VARCHAR(64) NOT NULL UNIQUE,
                 alias VARCHAR(40) NOT NULL UNIQUE,
                 created_at BIGINT NOT NULL,
-                last_seen BIGINT NOT NULL
+                last_seen BIGINT NOT NULL,
+                ip_hash VARCHAR(64),
+                ip_encrypted TEXT,
+                ip_last_seen BIGINT
             )
             """,
         )
+        ensure_identity_ip_columns(connection)
         execute(
             connection,
             f"""
@@ -228,6 +315,18 @@ def init_database():
         )
         execute(
             connection,
+            f"""
+            CREATE TABLE IF NOT EXISTS banned_ips (
+                id {ban_id},
+                ip_hash VARCHAR(64) NOT NULL UNIQUE,
+                ip_encrypted TEXT NOT NULL,
+                reason VARCHAR(500) NOT NULL,
+                created_at BIGINT NOT NULL
+            )
+            """,
+        )
+        execute(
+            connection,
             """
             INSERT INTO site_settings (key, value, updated_at)
             VALUES (?, ?, ?)
@@ -262,11 +361,18 @@ def init_database():
             "CREATE INDEX IF NOT EXISTS identities_last_seen "
             "ON identities(last_seen)",
         )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS identities_ip_hash "
+            "ON identities(ip_hash)",
+        )
+        migrate_legacy_aliases(connection)
 
 
 def purge_expired_content(connection):
     room_cutoff = now_ms() - ROOM_TTL_MS
     feedback_cutoff = now_ms() - FEEDBACK_TTL_MS
+    ip_cutoff = now_ms() - IP_RETENTION_MS
     execute(
         connection,
         """
@@ -285,6 +391,15 @@ def purge_expired_content(connection):
     )
     execute(connection, "DELETE FROM rooms WHERE created_at < ?", (room_cutoff,))
     execute(connection, "DELETE FROM feedback WHERE created_at < ?", (feedback_cutoff,))
+    execute(
+        connection,
+        """
+        UPDATE identities
+        SET ip_hash = NULL, ip_encrypted = NULL, ip_last_seen = NULL
+        WHERE ip_last_seen IS NOT NULL AND ip_last_seen < ?
+        """,
+        (ip_cutoff,),
+    )
 
 
 def clean_text(value, maximum):
@@ -340,19 +455,15 @@ def admin_auth_response(status=401):
         "Admin access is not configured. Add an ADMIN_PASSWORD of at least "
         "16 characters in Render."
         if status == 503
-        else "Admin authentication required."
+        else "Your admin session has ended. Sign in again."
     )
     response = jsonify({"error": message})
     response.status_code = status
-    if status == 401:
-        response.headers["WWW-Authenticate"] = (
-            'Basic realm="Whisper Admin", charset="UTF-8"'
-        )
     return response
 
 
 def admin_auth_failure_response():
-    address = request.remote_addr or "unknown"
+    address = client_ip()
     visitor = hashlib.sha256(
         _rate_salt + address.encode("utf-8")
     ).hexdigest()
@@ -377,7 +488,7 @@ def admin_auth_failure_response():
             return response
         bucket.append(current)
 
-    return admin_auth_response()
+    return jsonify({"error": "The admin password is incorrect."}), 401
 
 
 def admin_required(function):
@@ -385,15 +496,10 @@ def admin_required(function):
     def wrapped(*args, **kwargs):
         if len(ADMIN_PASSWORD) < 16:
             return admin_auth_response(503)
-
-        authorization = request.authorization
-        username = authorization.username if authorization else ""
-        password = authorization.password if authorization else ""
-        if not (
-            secure_equal(username, ADMIN_USERNAME)
-            and secure_equal(password, ADMIN_PASSWORD)
-        ):
-            return admin_auth_failure_response()
+        if session.get("is_admin") is not True:
+            if request.path.startswith("/api/"):
+                return admin_auth_response()
+            return redirect("/admin/login")
         return function(*args, **kwargs)
 
     return wrapped
@@ -417,9 +523,107 @@ def admin_action_required(function):
 
 def generate_alias():
     adjective = secrets.choice(ALIAS_ADJECTIVES)
+    trait = secrets.choice(ALIAS_TRAITS)
+    world = secrets.choice(ALIAS_WORLDS)
     animal = secrets.choice(ALIAS_ANIMALS)
-    suffix = "".join(secrets.choice(ALIAS_ALPHABET) for _ in range(8))
-    return f"{adjective}{animal}-{suffix}"
+    return f"{adjective}{trait}{world}{animal}"
+
+
+def migrate_legacy_aliases(connection):
+    identities = execute(connection, "SELECT id, alias FROM identities").fetchall()
+    used_aliases = {identity["alias"] for identity in identities}
+
+    for identity in identities:
+        old_alias = identity["alias"]
+        _name, separator, suffix = old_alias.rpartition("-")
+        if separator != "-" or len(suffix) != 8 or not suffix.isalnum():
+            continue
+
+        for _attempt in range(100):
+            new_alias = generate_alias()
+            if new_alias not in used_aliases:
+                break
+        else:
+            raise RuntimeError("Could not migrate a legacy anonymous name.")
+
+        execute(
+            connection,
+            "UPDATE messages SET sender = ? WHERE sender = ?",
+            (new_alias, old_alias),
+        )
+        execute(
+            connection,
+            "UPDATE identities SET alias = ? WHERE id = ?",
+            (new_alias, identity["id"]),
+        )
+        used_aliases.add(new_alias)
+
+
+def ip_privacy_enabled():
+    return len(IP_PRIVACY_KEY) >= 32
+
+
+def ip_hash(address):
+    if not ip_privacy_enabled() or address == "unknown":
+        return None
+    return hmac.new(
+        IP_PRIVACY_KEY.encode("utf-8"),
+        f"whisper-ip-ban-v1:{address}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def ip_cipher():
+    key_bytes = hashlib.sha256(
+        f"whisper-ip-encryption-v1:{IP_PRIVACY_KEY}".encode("utf-8")
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(key_bytes))
+
+
+def encrypt_ip(address):
+    if not ip_privacy_enabled() or address == "unknown":
+        return None
+    return ip_cipher().encrypt(address.encode("utf-8")).decode("ascii")
+
+
+def decrypt_ip(encrypted_address):
+    if not ip_privacy_enabled() or not encrypted_address:
+        return None
+    try:
+        return ip_cipher().decrypt(
+            encrypted_address.encode("ascii"),
+            ttl=None,
+        ).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError):
+        return None
+
+
+def is_ip_banned(connection, address):
+    address_hash = ip_hash(address)
+    if not address_hash:
+        return False
+    row = execute(
+        connection,
+        "SELECT 1 FROM banned_ips WHERE ip_hash = ?",
+        (address_hash,),
+    ).fetchone()
+    return row is not None
+
+
+def reject_banned_ip(connection, address):
+    if not is_ip_banned(connection, address):
+        return None
+    return (
+        jsonify(
+            {
+                "error": (
+                    "Access from this network has been blocked by the site "
+                    "administrator."
+                )
+            }
+        ),
+        403,
+    )
 
 
 def find_identity_alias(connection, identity_token):
@@ -433,16 +637,43 @@ def find_identity_alias(connection, identity_token):
     return identity["alias"] if identity is not None else None
 
 
-def reserve_identity(connection, identity_token):
+def update_identity_ip(connection, identity_token, address, timestamp):
+    address_hash = ip_hash(address)
+    encrypted_address = encrypt_ip(address)
+    if not address_hash or not encrypted_address:
+        return
+    execute(
+        connection,
+        """
+        UPDATE identities
+        SET ip_hash = ?, ip_encrypted = ?, ip_last_seen = ?, last_seen = ?
+        WHERE token_hash = ?
+        """,
+        (
+            address_hash,
+            encrypted_address,
+            timestamp,
+            timestamp,
+            hash_token(identity_token),
+        ),
+    )
+
+
+def reserve_identity(connection, identity_token, address):
     token_hash = hash_token(identity_token)
     timestamp = now_ms()
+    address_hash = ip_hash(address)
+    encrypted_address = encrypt_ip(address)
     existing_alias = find_identity_alias(connection, identity_token)
     if existing_alias:
-        execute(
-            connection,
-            "UPDATE identities SET last_seen = ? WHERE token_hash = ?",
-            (timestamp, token_hash),
-        )
+        if address_hash and encrypted_address:
+            update_identity_ip(connection, identity_token, address, timestamp)
+        else:
+            execute(
+                connection,
+                "UPDATE identities SET last_seen = ? WHERE token_hash = ?",
+                (timestamp, token_hash),
+            )
         return existing_alias
 
     for _attempt in range(20):
@@ -452,12 +683,23 @@ def reserve_identity(connection, identity_token):
                 connection,
                 """
                 INSERT INTO identities
-                    (token_hash, alias, created_at, last_seen)
-                VALUES (?, ?, ?, ?)
+                    (
+                        token_hash, alias, created_at, last_seen,
+                        ip_hash, ip_encrypted, ip_last_seen
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 RETURNING alias
                 """,
-                (token_hash, alias, timestamp, timestamp),
+                (
+                    token_hash,
+                    alias,
+                    timestamp,
+                    timestamp,
+                    address_hash,
+                    encrypted_address,
+                    timestamp if address_hash else None,
+                ),
             ).fetchone()
             if inserted is not None:
                 return inserted["alias"]
@@ -466,10 +708,21 @@ def reserve_identity(connection, identity_token):
                 connection,
                 """
                 INSERT OR IGNORE INTO identities
-                    (token_hash, alias, created_at, last_seen)
-                VALUES (?, ?, ?, ?)
+                    (
+                        token_hash, alias, created_at, last_seen,
+                        ip_hash, ip_encrypted, ip_last_seen
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (token_hash, alias, timestamp, timestamp),
+                (
+                    token_hash,
+                    alias,
+                    timestamp,
+                    timestamp,
+                    address_hash,
+                    encrypted_address,
+                    timestamp if address_hash else None,
+                ),
             )
             if inserted.rowcount == 1:
                 return alias
@@ -590,9 +843,15 @@ def add_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
-    if request.path.startswith("/api/") or request.path == "/admin":
+    if request.path.startswith("/api/") or request.path in {
+        "/admin",
+        "/admin/login",
+        "/admin.js",
+    }:
         response.headers["Cache-Control"] = "no-store, max-age=0"
-    if request.path == "/admin" or request.path.startswith("/api/admin/"):
+    if request.path in {"/admin", "/admin/login", "/admin.js"} or (
+        request.path.startswith("/api/admin/")
+    ):
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     if request.is_secure:
         response.headers["Strict-Transport-Security"] = (
@@ -619,6 +878,23 @@ def admin_page():
     return send_from_directory(app.root_path, "admin.html")
 
 
+@app.get("/admin/login")
+def admin_login_page():
+    if session.get("is_admin") is True:
+        return redirect("/admin")
+    return send_from_directory(app.root_path, "admin-login.html")
+
+
+@app.get("/admin.js")
+@admin_required
+def admin_script():
+    return send_from_directory(
+        app.root_path,
+        "admin.js",
+        mimetype="application/javascript",
+    )
+
+
 @app.get("/favicon.ico")
 def favicon():
     return send_from_directory(app.root_path, "favicon.png", mimetype="image/png")
@@ -632,7 +908,7 @@ def static_file(filename):
         "style.css",
         "script.js",
         "feedback.js",
-        "admin.js",
+        "admin-login.js",
         "logo.png",
         "report.png",
         "favicon.png",
@@ -646,6 +922,35 @@ def static_file(filename):
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.post("/api/admin/login")
+@rate_limit(20, 15 * 60)
+@admin_action_required
+def admin_login():
+    if len(ADMIN_PASSWORD) < 16:
+        return admin_auth_response(503)
+
+    data = request.get_json(silent=True) or {}
+    username = clean_text(data.get("username"), 100)
+    password = data.get("password") if isinstance(data.get("password"), str) else ""
+    if not (
+        secure_equal(username, ADMIN_USERNAME)
+        and secure_equal(password, ADMIN_PASSWORD)
+    ):
+        return admin_auth_failure_response()
+
+    session.clear()
+    session["is_admin"] = True
+    return jsonify({"signedIn": True})
+
+
+@app.post("/api/admin/logout")
+@admin_required
+@admin_action_required
+def admin_logout():
+    session.clear()
+    return ("", 204)
 
 
 @app.get("/api/site-config")
@@ -674,8 +979,13 @@ def assign_identity():
     if len(identity_token) < 20:
         return jsonify({"error": "A valid identity token is required."}), 400
 
+    address = client_ip()
     with database() as connection:
-        alias = reserve_identity(connection, identity_token)
+        purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
+        alias = reserve_identity(connection, identity_token, address)
     return jsonify({"alias": alias})
 
 
@@ -714,8 +1024,12 @@ def create_room():
 
     room_code = "".join(secrets.choice(alphabet) for _ in range(8))
 
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         if get_site_setting(connection, "site_paused", "0") == "1":
             return (
                 jsonify(
@@ -731,6 +1045,7 @@ def create_room():
         sender = find_identity_alias(connection, identity_token)
         if sender is None:
             return jsonify({"error": "Refresh the page to restore your identity."}), 401
+        update_identity_ip(connection, identity_token, address, created_at)
         execute(
             connection,
             """
@@ -810,8 +1125,12 @@ def add_message(room_code):
         return jsonify({"error": "Identity token and message are required."}), 400
 
     created_at = now_ms()
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         if get_site_setting(connection, "site_paused", "0") == "1":
             return (
                 jsonify(
@@ -827,6 +1146,7 @@ def add_message(room_code):
         sender = find_identity_alias(connection, identity_token)
         if sender is None:
             return jsonify({"error": "Refresh the page to restore your identity."}), 401
+        update_identity_ip(connection, identity_token, address, created_at)
         room = execute(
             connection, "SELECT code FROM rooms WHERE code = ?", (room_code,)
         ).fetchone()
@@ -980,6 +1300,7 @@ def admin_overview():
             ("messages", "messages"),
             ("identities", "identities"),
             ("reports", "reports"),
+            ("bans", "banned_ips"),
         ):
             stats[label] = execute(
                 connection,
@@ -1002,6 +1323,23 @@ def admin_overview():
             LIMIT 200
             """,
         ).fetchall()
+        ban_rows = execute(
+            connection,
+            """
+            SELECT
+                banned_ips.id,
+                banned_ips.ip_encrypted,
+                banned_ips.reason,
+                banned_ips.created_at,
+                (
+                    SELECT MIN(identities.alias)
+                    FROM identities
+                    WHERE identities.ip_hash = banned_ips.ip_hash
+                ) AS alias
+            FROM banned_ips
+            ORDER BY banned_ips.created_at DESC
+            """,
+        ).fetchall()
         config = get_site_config(connection)
 
     rooms = [
@@ -1014,7 +1352,25 @@ def admin_overview():
         }
         for row in room_rows
     ]
-    return jsonify({"stats": stats, "rooms": rooms, "config": config})
+    bans = [
+        {
+            "id": row["id"],
+            "alias": row["alias"],
+            "ipAddress": decrypt_ip(row["ip_encrypted"]),
+            "reason": row["reason"],
+            "createdAt": row["created_at"],
+        }
+        for row in ban_rows
+    ]
+    return jsonify(
+        {
+            "stats": stats,
+            "rooms": rooms,
+            "bans": bans,
+            "config": config,
+            "ipModerationConfigured": ip_privacy_enabled(),
+        }
+    )
 
 
 @app.get("/api/admin/rooms/<room_code>")
@@ -1037,10 +1393,19 @@ def admin_room_detail(room_code):
         messages = execute(
             connection,
             """
-            SELECT id, sender, text, created_at
+            SELECT
+                messages.id,
+                messages.sender,
+                messages.text,
+                messages.created_at,
+                identities.id AS identity_id,
+                identities.ip_encrypted,
+                banned_ips.id AS ban_id
             FROM messages
-            WHERE room_code = ?
-            ORDER BY id
+            LEFT JOIN identities ON identities.alias = messages.sender
+            LEFT JOIN banned_ips ON banned_ips.ip_hash = identities.ip_hash
+            WHERE messages.room_code = ?
+            ORDER BY messages.id
             """,
             (room_code,),
         ).fetchall()
@@ -1050,13 +1415,111 @@ def admin_room_detail(room_code):
             (room_code,),
         ).fetchone()["count"]
 
+    admin_messages = [
+        {
+            **public_message(message),
+            "identityId": message["identity_id"],
+            "ipAddress": decrypt_ip(message["ip_encrypted"]),
+            "banId": message["ban_id"],
+        }
+        for message in messages
+    ]
     return jsonify(
         {
             "room": public_room(room),
-            "messages": [public_message(message) for message in messages],
+            "messages": admin_messages,
             "reportCount": report_count,
+            "ipModerationConfigured": ip_privacy_enabled(),
         }
     )
+
+
+@app.post("/api/admin/bans")
+@rate_limit(30, 60)
+@admin_required
+@admin_action_required
+def admin_ban_identity():
+    if not ip_privacy_enabled():
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "IP moderation is not configured. Add IP_PRIVACY_KEY "
+                        "in Render first."
+                    )
+                }
+            ),
+            503,
+        )
+
+    data = request.get_json(silent=True) or {}
+    identity_id = data.get("identityId")
+    reason = clean_text(data.get("reason"), 500) or "No reason provided"
+    if not isinstance(identity_id, int):
+        return jsonify({"error": "A valid user is required."}), 400
+
+    with database() as connection:
+        identity = execute(
+            connection,
+            """
+            SELECT alias, ip_hash, ip_encrypted
+            FROM identities
+            WHERE id = ?
+            """,
+            (identity_id,),
+        ).fetchone()
+        if identity is None:
+            return jsonify({"error": "Anonymous user not found."}), 404
+        if not identity["ip_hash"] or not identity["ip_encrypted"]:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "No recent network address is available for this "
+                            "anonymous user."
+                        )
+                    }
+                ),
+                409,
+            )
+
+        execute(
+            connection,
+            """
+            INSERT INTO banned_ips
+                (ip_hash, ip_encrypted, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (ip_hash) DO UPDATE
+            SET
+                ip_encrypted = excluded.ip_encrypted,
+                reason = excluded.reason,
+                created_at = excluded.created_at
+            """,
+            (
+                identity["ip_hash"],
+                identity["ip_encrypted"],
+                reason,
+                now_ms(),
+            ),
+        )
+
+    return jsonify({"banned": True, "alias": identity["alias"]}), 201
+
+
+@app.delete("/api/admin/bans/<int:ban_id>")
+@rate_limit(30, 60)
+@admin_required
+@admin_action_required
+def admin_remove_ban(ban_id):
+    with database() as connection:
+        deleted = execute(
+            connection,
+            "DELETE FROM banned_ips WHERE id = ?",
+            (ban_id,),
+        )
+        if deleted.rowcount == 0:
+            return jsonify({"error": "Ban not found."}), 404
+    return ("", 204)
 
 
 @app.delete("/api/admin/rooms/<room_code>")

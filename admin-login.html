@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#12002b">
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <title>Whisper Admin Sign In</title>
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<main class="container adminLoginPanel">
+    <img src="/logo.png" class="logo" alt="Whisper">
+    <p class="adminEyebrow">Private control panel</p>
+    <h1>Admin sign in</h1>
+
+    <form id="adminLoginForm">
+        <label for="adminUsername">Username</label>
+        <input
+            id="adminUsername"
+            type="text"
+            autocomplete="username"
+            value="admin"
+            required
+        >
+
+        <label for="adminPassword">Password</label>
+        <input
+            id="adminPassword"
+            type="password"
+            autocomplete="current-password"
+            required
+        >
+
+        <button id="adminLoginBtn" type="submit" class="fullBtn">Sign in</button>
+        <p id="adminLoginStatus" class="status" role="status" aria-live="polite"></p>
+    </form>
+
+    <a href="/" class="backLink">← Back to Whisper</a>
+</main>
+
+<script src="/admin-login.js"></script>
+</body>
+</html>

@@ -21,6 +21,8 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      - key: IP_PRIVACY_KEY
+        sync: false
 
 databases:
   - name: whisper-db
