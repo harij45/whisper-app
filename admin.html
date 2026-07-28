@@ -19,7 +19,10 @@
             <p class="adminEyebrow">Private control panel</p>
             <h1>Site Admin</h1>
         </div>
-        <a href="/" class="adminSiteLink">View site</a>
+        <div class="adminHeaderActions">
+            <a href="/" class="adminSiteLink">View site</a>
+            <button id="adminLogoutBtn" type="button" class="secondaryBtn">Sign out</button>
+        </div>
     </header>
 
     <p id="adminStatus" class="status adminStatus" role="status" aria-live="polite"></p>
@@ -98,6 +101,20 @@
             </button>
         </div>
         <div id="adminMessages" class="adminMessages"></div>
+    </section>
+
+    <section class="adminSection" aria-labelledby="bansHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">Network moderation</p>
+                <h2 id="bansHeading">IP bans</h2>
+            </div>
+        </div>
+        <p id="ipModerationStatus" class="adminPrivacyNote"></p>
+        <p class="adminPrivacyNote">
+            IP bans can affect multiple people sharing one network and can be bypassed by changing networks.
+        </p>
+        <div id="adminBans" class="adminBans"></div>
     </section>
 
     <section class="adminSection dangerZone" aria-labelledby="dangerHeading">

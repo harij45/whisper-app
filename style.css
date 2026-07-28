@@ -598,6 +598,34 @@ a:focus-visible {
     color: white;
 }
 
+.adminHeaderActions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.adminHeaderActions button {
+    min-height: 38px;
+    padding: 7px 10px;
+}
+
+.adminLoginPanel {
+    width: min(92%, 390px);
+}
+
+.adminLoginPanel h1 {
+    margin: 4px 0 20px;
+    font-size: clamp(1.7rem, 7vw, 2.2rem);
+}
+
+.adminLoginPanel form label {
+    display: block;
+    margin: 13px 0 6px;
+    color: #d8d1e5;
+    font-size: 0.78rem;
+    font-weight: 650;
+}
+
 .adminStatus {
     margin-bottom: 14px;
 }
@@ -654,7 +682,7 @@ a:focus-visible {
 
 .adminStats {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 10px;
 }
 
@@ -678,14 +706,16 @@ a:focus-visible {
 }
 
 .adminRooms,
-.adminMessages {
+.adminMessages,
+.adminBans {
     display: grid;
     gap: 9px;
     margin-top: 14px;
 }
 
 .adminRoom,
-.adminMessage {
+.adminMessage,
+.adminBan {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -695,20 +725,23 @@ a:focus-visible {
 }
 
 .adminRoom strong,
-.adminMessage strong {
+.adminMessage strong,
+.adminBan strong {
     color: white;
     letter-spacing: 0.04em;
 }
 
 .adminRoom p,
-.adminMessage p {
+.adminMessage p,
+.adminBan p {
     margin: 4px 0;
     color: #ddd8e7;
     overflow-wrap: anywhere;
 }
 
 .adminRoom span,
-.adminMessage span {
+.adminMessage span,
+.adminBan span {
     color: #888191;
     font-size: 0.7rem;
 }
@@ -718,11 +751,35 @@ a:focus-visible {
     gap: 7px;
 }
 
+.adminMessageActions {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
 .adminRoomActions button,
-.adminMessage > button {
+.adminMessageActions button,
+.adminBan > button {
     min-height: 38px;
     padding: 7px 10px;
     font-size: 0.75rem;
+}
+
+.adminIp {
+    display: block;
+    margin-top: 6px;
+    color: #b8accb !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.adminPrivacyNote {
+    margin: 6px 0;
+    color: var(--muted);
+    font-size: 0.77rem;
+}
+
+.adminPrivacyNote.error {
+    color: #ff9aa5;
 }
 
 .dangerBtn {
@@ -801,8 +858,11 @@ a:focus-visible {
     }
 
     .adminSiteLink {
-        grid-column: 1 / -1;
         width: fit-content;
+    }
+
+    .adminHeaderActions {
+        grid-column: 1 / -1;
     }
 
     .adminLogo {
@@ -818,13 +878,15 @@ a:focus-visible {
     }
 
     .adminRoom,
-    .adminMessage {
+    .adminMessage,
+    .adminBan {
         grid-template-columns: 1fr;
         gap: 12px;
     }
 
     .adminRoomActions,
-    .adminMessage > button {
+    .adminMessageActions,
+    .adminBan > button {
         width: 100%;
     }
 

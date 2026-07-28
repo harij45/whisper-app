@@ -19,6 +19,11 @@ async function adminApi(path, options = {}) {
         credentials: "same-origin"
     });
 
+    if (response.status === 401) {
+        window.location.replace("/admin/login");
+        throw new Error("Your admin session has ended.");
+    }
+
     if (!response.ok) {
         let message = "The admin action could not be completed.";
         try {
@@ -63,7 +68,8 @@ function renderStats() {
         ["rooms", "Live rooms"],
         ["messages", "Messages"],
         ["identities", "Reserved names"],
-        ["reports", "Reports"]
+        ["reports", "Reports"],
+        ["bans", "IP bans"]
     ];
     stats.replaceChildren();
 
@@ -130,6 +136,53 @@ function renderRooms() {
     });
 }
 
+function renderBans() {
+    const list = document.getElementById("adminBans");
+    const status = document.getElementById("ipModerationStatus");
+    list.replaceChildren();
+
+    status.textContent = adminOverview.ipModerationConfigured
+        ? "Recent addresses are encrypted and are visible only in this admin session. They are removed from user records after 30 days."
+        : "IP moderation is disabled. Add IP_PRIVACY_KEY in Render to enable encrypted address viewing and bans.";
+    status.classList.toggle(
+        "error",
+        !adminOverview.ipModerationConfigured
+    );
+
+    if (!adminOverview.bans.length) {
+        const empty = document.createElement("p");
+        empty.className = "adminEmpty";
+        empty.textContent = "No active IP bans.";
+        list.appendChild(empty);
+        return;
+    }
+
+    adminOverview.bans.forEach(ban => {
+        const row = document.createElement("article");
+        row.className = "adminBan";
+        const info = document.createElement("div");
+        const address = document.createElement("strong");
+        address.textContent = ban.ipAddress || "Encrypted address unavailable";
+        const alias = document.createElement("p");
+        alias.textContent = ban.alias
+            ? `Most recent name: ${ban.alias}`
+            : "No current name is linked";
+        const reason = document.createElement("p");
+        reason.textContent = `Reason: ${ban.reason}`;
+        const date = document.createElement("span");
+        date.textContent = `Banned ${formatAdminDate(ban.createdAt)}`;
+        info.append(address, alias, reason, date);
+
+        const unbanButton = document.createElement("button");
+        unbanButton.type = "button";
+        unbanButton.className = "secondaryBtn";
+        unbanButton.textContent = "Remove ban";
+        unbanButton.addEventListener("click", () => removeBan(ban.id));
+        row.append(info, unbanButton);
+        list.appendChild(row);
+    });
+}
+
 async function loadAdminOverview(showMessage = false) {
     try {
         const data = await adminApi("/api/admin/overview");
@@ -139,6 +192,7 @@ async function loadAdminOverview(showMessage = false) {
         renderSiteState();
         renderStats();
         renderRooms();
+        renderBans();
         if (showMessage) setAdminStatus("Dashboard refreshed.");
     } catch (error) {
         setAdminStatus(error.message, true);
@@ -191,8 +245,29 @@ function renderAdminMessages(messages) {
         text.textContent = message.text;
         const time = document.createElement("span");
         time.textContent = formatAdminDate(message.createdAt);
-        info.append(sender, text, time);
+        const address = document.createElement("span");
+        address.className = "adminIp";
+        address.textContent = message.ipAddress
+            ? `Recent IP: ${message.ipAddress}`
+            : "Recent IP: unavailable";
+        info.append(sender, text, time, address);
 
+        const actions = document.createElement("div");
+        actions.className = "adminMessageActions";
+        const moderationButton = document.createElement("button");
+        moderationButton.type = "button";
+        moderationButton.className = message.banId ? "secondaryBtn" : "dangerBtn";
+        moderationButton.textContent = message.banId ? "Remove IP ban" : "Ban IP";
+        moderationButton.disabled = message.banId
+            ? false
+            : !message.identityId || !message.ipAddress;
+        moderationButton.addEventListener("click", () => {
+            if (message.banId) {
+                removeBan(message.banId, true);
+            } else {
+                banIdentity(message);
+            }
+        });
         const deleteButton = document.createElement("button");
         deleteButton.type = "button";
         deleteButton.className = "dangerBtn";
@@ -200,9 +275,51 @@ function renderAdminMessages(messages) {
         deleteButton.addEventListener("click", () =>
             deleteAdminMessage(message.id)
         );
-        row.append(info, deleteButton);
+        actions.append(moderationButton, deleteButton);
+        row.append(info, actions);
         list.appendChild(row);
     });
+}
+
+async function banIdentity(message) {
+    const reason = prompt(
+        `Ban the recent IP used by ${message.sender}? Enter a reason:`,
+        "Abuse or spam"
+    );
+    if (reason === null) return;
+
+    try {
+        await adminApi("/api/admin/bans", {
+            method: "POST",
+            body: JSON.stringify({
+                identityId: message.identityId,
+                reason: reason.trim()
+            })
+        });
+        await Promise.all([
+            loadAdminRoom(selectedRoomCode),
+            loadAdminOverview()
+        ]);
+        setAdminStatus(`${message.sender}’s recent IP was banned.`);
+    } catch (error) {
+        setAdminStatus(error.message, true);
+    }
+}
+
+async function removeBan(banId, refreshRoom = false) {
+    if (!confirm("Remove this IP ban?")) return;
+    try {
+        await adminApi(`/api/admin/bans/${banId}`, {
+            method: "DELETE"
+        });
+        await loadAdminOverview();
+        if (refreshRoom && selectedRoomCode) {
+            await loadAdminRoom(selectedRoomCode);
+        }
+        setAdminStatus("IP ban removed.");
+    } catch (error) {
+        setAdminStatus(error.message, true);
+    }
 }
 
 async function deleteAdminMessage(messageId) {
@@ -276,6 +393,18 @@ function closeRoomDetail() {
     document.getElementById("adminMessages").replaceChildren();
 }
 
+async function signOut() {
+    try {
+        await adminApi("/api/admin/logout", {
+            method: "POST",
+            body: "{}"
+        });
+        window.location.replace("/admin/login");
+    } catch (error) {
+        setAdminStatus(error.message, true);
+    }
+}
+
 document.getElementById("togglePauseBtn").addEventListener("click", () => {
     pendingPaused = !pendingPaused;
     renderSiteState();
@@ -306,5 +435,6 @@ document.getElementById("deleteAllRoomsBtn").addEventListener(
     "click",
     deleteAllRooms
 );
+document.getElementById("adminLogoutBtn").addEventListener("click", signOut);
 
 loadAdminOverview();
