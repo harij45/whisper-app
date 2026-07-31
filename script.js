@@ -9,6 +9,7 @@ let isBlocked = false;
 let currentMessages = [];
 let selectedReportMessage = null;
 let isReportingMessage = false;
+let openMessageActionsId = null;
 const blockedMessage = "You have been blocked.";
 const roomsPerPage = 15;
 const ownerTokens = readStoredJson("whisperOwnerTokens", {});
@@ -154,6 +155,7 @@ function handleBlockedError(error) {
     username = null;
     currentRoom = null;
     currentMessages = [];
+    openMessageActionsId = null;
     rooms = {};
     document.getElementById("roomsList").replaceChildren();
     document.getElementById("roomPagination").classList.add("hidden");
@@ -358,6 +360,8 @@ async function joinRoom(code) {
 
     currentRoom = code;
     currentMessages = [];
+    openMessageActionsId = null;
+    updateLiveStatus("Disconnected", "disconnected");
     const messages = document.getElementById("chatMessages");
     messages.replaceChildren();
     messages.scrollTop = 0;
@@ -385,11 +389,11 @@ async function loadCurrentRoom() {
         renderMessages(data.messages);
         document.getElementById("chatStatus").textContent =
             isBlocked ? blockedMessage : "";
-        updateLiveStatus("Auto-refresh", "live");
+        updateLiveStatus("Connected", "connected");
     } catch (error) {
         if (handleBlockedError(error)) return;
         if (currentRoom !== requestedRoom) return;
-        updateLiveStatus("Retrying", "connecting");
+        updateLiveStatus("Disconnected", "disconnected");
         if (error.message === "Room not found.") {
             goHome();
             setStatus("That room has been closed.", true);
@@ -401,8 +405,9 @@ async function loadCurrentRoom() {
 
 function updateLiveStatus(message, state = "") {
     const status = document.getElementById("liveStatus");
-    status.textContent = message;
     status.dataset.state = state;
+    status.setAttribute("aria-label", message);
+    status.title = message;
 }
 
 function muteAlias(alias) {
@@ -433,10 +438,17 @@ function createMessageAction(label, action) {
     return button;
 }
 
+function toggleMessageActions(messageId) {
+    openMessageActionsId =
+        openMessageActionsId === messageId ? null : messageId;
+    renderMessages(currentMessages, true);
+}
+
 function renderMessages(messages, force = false) {
     const box = document.getElementById("chatMessages");
     const wasNearBottom =
         box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    const previousScrollTop = box.scrollTop;
     const previousLastId = box.lastElementChild?.dataset.messageId;
     const nextLastId = messages.at(-1)?.id?.toString();
 
@@ -463,12 +475,37 @@ function renderMessages(messages, force = false) {
         messageRow.className = "msgRow";
         const text = document.createElement("span");
         text.className = "msgText";
-        if (hideContent) {
-            text.textContent = `Message from ${message.sender} is muted.`;
+        if (message.sender !== username) {
+            const sender = document.createElement("button");
+            sender.type = "button";
+            sender.className = "messageSenderBtn";
+            sender.textContent = `${message.sender}:`;
+            sender.setAttribute(
+                "aria-label",
+                `Message actions for ${message.sender}`
+            );
+            sender.setAttribute(
+                "aria-expanded",
+                String(openMessageActionsId === message.id)
+            );
+            sender.setAttribute(
+                "aria-controls",
+                `message-actions-${message.id}`
+            );
+            sender.addEventListener(
+                "click",
+                () => toggleMessageActions(message.id)
+            );
+            text.append(
+                sender,
+                document.createTextNode(
+                    hideContent ? " Message is muted." : ` ${message.text}`
+                )
+            );
         } else {
             const sender = document.createElement("strong");
-            sender.textContent = `${message.sender}: `;
-            text.append(sender, document.createTextNode(message.text));
+            sender.textContent = `${message.sender}:`;
+            text.append(sender, document.createTextNode(` ${message.text}`));
         }
 
         const time = document.createElement("time");
@@ -480,6 +517,11 @@ function renderMessages(messages, force = false) {
         if (message.sender !== username) {
             const actions = document.createElement("div");
             actions.className = "messageActions";
+            actions.id = `message-actions-${message.id}`;
+            actions.classList.toggle(
+                "hidden",
+                openMessageActionsId !== message.id
+            );
             if (hideContent) {
                 actions.appendChild(
                     createMessageAction("Show once", () => {
@@ -529,6 +571,8 @@ function renderMessages(messages, force = false) {
 
     if (wasNearBottom || !previousLastId) {
         box.scrollTop = box.scrollHeight;
+    } else {
+        box.scrollTop = previousScrollTop;
     }
 }
 
@@ -633,6 +677,7 @@ function goHome() {
     selectedReportMessage = null;
     currentRoom = null;
     currentMessages = [];
+    openMessageActionsId = null;
     document.getElementById("chatMessages").replaceChildren();
     document.getElementById("chatStatus").textContent = "";
     document.getElementById("chatDraftStatus").textContent = "";
@@ -743,7 +788,7 @@ setInterval(() => {
     if (currentRoom) {
         loadCurrentRoom();
     }
-}, 5000);
+}, 2000);
 
 setInterval(() => {
     if (document.hidden) return;

@@ -84,7 +84,14 @@
 
         <div class="roomHeading">
             <h2 id="roomTitle"></h2>
-            <span id="liveStatus" class="liveStatus" data-state="connecting">Connecting</span>
+            <span
+                id="liveStatus"
+                class="liveStatus"
+                data-state="disconnected"
+                role="status"
+                aria-label="Disconnected"
+                title="Disconnected"
+            ></span>
         </div>
 
         <div id="chatMessages" role="log" aria-live="polite"></div>

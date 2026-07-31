@@ -397,19 +397,30 @@ a:focus-visible {
 
 .liveStatus {
     flex: 0 0 auto;
-    padding: 4px 7px;
-    border: 1px solid rgba(102, 255, 163, 0.35);
-    color: #82f8b3;
-    font-size: 0.65rem;
-    font-weight: 750;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border: 1px solid rgba(255, 77, 97, 0.55);
+    background: transparent;
 }
 
-.liveStatus[data-state="connecting"],
-.liveStatus[data-state="fallback"] {
-    border-color: rgba(255, 255, 255, 0.16);
-    color: var(--muted);
+.liveStatus::before {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #ff4d61;
+    box-shadow: 0 0 8px rgba(255, 77, 97, 0.55);
+    content: "";
+}
+
+.liveStatus[data-state="connected"] {
+    border-color: rgba(102, 255, 163, 0.42);
+}
+
+.liveStatus[data-state="connected"]::before {
+    background: #66ffa3;
+    box-shadow: 0 0 8px rgba(102, 255, 163, 0.5);
 }
 
 .messageActions {
@@ -434,6 +445,30 @@ a:focus-visible {
     border-bottom-color: #b9a7ff;
     background: transparent;
     color: #d8ceff;
+}
+
+.messageSenderBtn {
+    display: inline;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    background: transparent;
+    color: white;
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+}
+
+.messageSenderBtn:hover,
+.messageSenderBtn:focus-visible {
+    border-bottom-color: #b9a7ff;
+    background: transparent;
+    color: #d8ceff;
+}
+
+.messageSenderBtn:active {
+    transform: none;
 }
 
 .mutedMessage .msgText {
@@ -580,7 +615,8 @@ a:focus-visible {
     overflow-wrap: anywhere;
 }
 
-.msgText strong {
+.msgText strong,
+.messageSenderBtn {
     color: white;
 }
 
