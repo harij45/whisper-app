@@ -56,6 +56,7 @@ ROOM_TTL_MS = 24 * 60 * 60 * 1000
 FEEDBACK_TTL_MS = 30 * 24 * 60 * 60 * 1000
 IP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 AUDIT_RETENTION_MS = 180 * 24 * 60 * 60 * 1000
+CLEANUP_INTERVAL_SECONDS = 60
 MAX_MESSAGES_PER_ROOM = 500
 MESSAGE_REPORT_REASONS = {
     "harassment",
@@ -103,6 +104,8 @@ app.config.update(
 _rate_buckets = defaultdict(deque)
 _rate_lock = Lock()
 _rate_salt = secrets.token_bytes(32)
+_cleanup_lock = Lock()
+_last_cleanup_at = 0.0
 
 
 def now_ms():
@@ -493,6 +496,22 @@ def init_database():
 
 
 def purge_expired_content(connection):
+    global _last_cleanup_at
+
+    current = time.monotonic()
+    if current - _last_cleanup_at < CLEANUP_INTERVAL_SECONDS:
+        return
+
+    with _cleanup_lock:
+        current = time.monotonic()
+        if current - _last_cleanup_at < CLEANUP_INTERVAL_SECONDS:
+            return
+
+        _purge_expired_content(connection)
+        _last_cleanup_at = current
+
+
+def _purge_expired_content(connection):
     room_cutoff = now_ms() - ROOM_TTL_MS
     feedback_cutoff = now_ms() - FEEDBACK_TTL_MS
     ip_cutoff = now_ms() - IP_RETENTION_MS

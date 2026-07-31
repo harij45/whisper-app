@@ -6,8 +6,6 @@ let currentRoomPage = 1;
 let roomSearchQuery = "";
 let sitePaused = false;
 let isBlocked = false;
-let roomEventSource = null;
-let roomEventCode = null;
 let currentMessages = [];
 let selectedReportMessage = null;
 let isReportingMessage = false;
@@ -155,7 +153,6 @@ function handleBlockedError(error) {
     isBlocked = true;
     username = null;
     currentRoom = null;
-    stopRoomEvents();
     currentMessages = [];
     rooms = {};
     document.getElementById("roomsList").replaceChildren();
@@ -359,7 +356,6 @@ function changeRoomPage(direction) {
 async function joinRoom(code) {
     if (isBlocked) return;
 
-    stopRoomEvents();
     currentRoom = code;
     currentMessages = [];
     const messages = document.getElementById("chatMessages");
@@ -389,10 +385,11 @@ async function loadCurrentRoom() {
         renderMessages(data.messages);
         document.getElementById("chatStatus").textContent =
             isBlocked ? blockedMessage : "";
-        startRoomEvents(requestedRoom);
+        updateLiveStatus("Auto-refresh", "live");
     } catch (error) {
         if (handleBlockedError(error)) return;
         if (currentRoom !== requestedRoom) return;
+        updateLiveStatus("Retrying", "connecting");
         if (error.message === "Room not found.") {
             goHome();
             setStatus("That room has been closed.", true);
@@ -406,78 +403,6 @@ function updateLiveStatus(message, state = "") {
     const status = document.getElementById("liveStatus");
     status.textContent = message;
     status.dataset.state = state;
-}
-
-function stopRoomEvents() {
-    if (roomEventSource) {
-        roomEventSource.close();
-    }
-    roomEventSource = null;
-    roomEventCode = null;
-}
-
-function startRoomEvents(roomCode) {
-    if (!window.EventSource) {
-        updateLiveStatus("Refreshing", "fallback");
-        return;
-    }
-    if (roomEventSource && roomEventCode === roomCode) return;
-
-    stopRoomEvents();
-    const lastMessageId = currentMessages.at(-1)?.id || 0;
-    const query = new URLSearchParams({
-        after: String(lastMessageId),
-        count: String(currentMessages.length)
-    });
-    const source = new EventSource(
-        `/api/rooms/${encodeURIComponent(roomCode)}/events?${query}`
-    );
-    roomEventSource = source;
-    roomEventCode = roomCode;
-    updateLiveStatus("Connecting", "connecting");
-
-    source.onopen = () => {
-        if (currentRoom === roomCode) updateLiveStatus("Live", "live");
-    };
-
-    source.addEventListener("message", event => {
-        if (currentRoom !== roomCode) return;
-        try {
-            const message = JSON.parse(event.data);
-            if (!currentMessages.some(item => item.id === message.id)) {
-                currentMessages.push(message);
-                currentMessages.sort((first, second) => first.id - second.id);
-                renderMessages(currentMessages);
-            }
-        } catch {
-            updateLiveStatus("Reconnecting", "connecting");
-        }
-    });
-
-    source.addEventListener("sync", () => {
-        if (currentRoom === roomCode) loadCurrentRoom();
-    });
-
-    source.addEventListener("room_closed", () => {
-        if (currentRoom !== roomCode) return;
-        stopRoomEvents();
-        goHome();
-        setStatus("That room has been closed.", true);
-    });
-
-    source.addEventListener("blocked", event => {
-        try {
-            handleBlockedError(JSON.parse(event.data));
-        } catch {
-            handleBlockedError({ code: "IP_BLOCKED" });
-        }
-    });
-
-    source.onerror = () => {
-        if (currentRoom === roomCode && !isBlocked) {
-            updateLiveStatus("Reconnecting", "connecting");
-        }
-    };
 }
 
 function muteAlias(alias) {
@@ -703,7 +628,6 @@ async function sendMessage() {
 }
 
 function goHome() {
-    stopRoomEvents();
     const reportDialog = document.getElementById("messageReportDialog");
     if (reportDialog.open && !isReportingMessage) reportDialog.close();
     selectedReportMessage = null;
@@ -816,18 +740,26 @@ document.getElementById("messageReportDialog").addEventListener("cancel", event 
 
 setInterval(() => {
     if (document.hidden) return;
-    if (currentRoom && !window.EventSource) {
+    if (currentRoom) {
         loadCurrentRoom();
-    } else if (!currentRoom) {
-        loadRooms();
     }
 }, 5000);
+
+setInterval(() => {
+    if (document.hidden) return;
+    if (!currentRoom) {
+        loadRooms();
+    }
+}, 15000);
 
 setInterval(loadSiteConfig, 15000);
 
 document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && currentRoom && window.EventSource) {
-        startRoomEvents(currentRoom);
+    if (document.hidden) return;
+    if (currentRoom) {
+        loadCurrentRoom();
+    } else {
+        loadRooms();
     }
 });
 
