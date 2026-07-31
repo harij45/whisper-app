@@ -80,6 +80,21 @@
         </div>
     </section>
 
+    <section class="adminSection" aria-labelledby="reportedMessagesHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">Message moderation queue</p>
+                <h2 id="reportedMessagesHeading">Reported Messages</h2>
+            </div>
+            <span id="reportedMessagesCount" class="stateBadge">Loading</span>
+        </div>
+        <p class="adminPrivacyNote">
+            Review the report reason, save a private moderator note, then resolve
+            the report or manage the full room.
+        </p>
+        <div id="adminMessageReports" class="adminMessageReports"></div>
+    </section>
+
     <section class="adminSection" aria-labelledby="roomsHeading">
         <div class="adminSectionHeading">
             <div>
@@ -135,7 +150,24 @@
             IP-based bans can affect multiple people sharing one network and can
             be bypassed by changing networks.
         </p>
+        <p class="adminPrivacyNote">
+            Bans can be temporary or permanent. Expired bans are removed
+            automatically.
+        </p>
         <div id="adminBans" class="adminBans"></div>
+    </section>
+
+    <section class="adminSection" aria-labelledby="auditHeading">
+        <div class="adminSectionHeading">
+            <div>
+                <p class="adminEyebrow">Accountability</p>
+                <h2 id="auditHeading">Admin Audit Log</h2>
+            </div>
+        </div>
+        <p class="adminPrivacyNote">
+            Recent moderation and site-control actions are retained for 180 days.
+        </p>
+        <div id="adminAuditLog" class="adminAuditLog"></div>
     </section>
 
     <section class="adminSection dangerZone" aria-labelledby="dangerHeading">

@@ -68,7 +68,8 @@ function renderStats() {
         ["rooms", "Live rooms"],
         ["messages", "Messages"],
         ["identities", "Reserved names"],
-        ["reports", "Reports"],
+        ["reports", "Room reports"],
+        ["messageReports", "Message reports"],
         ["bans", "Bans"]
     ];
     stats.replaceChildren();
@@ -114,7 +115,11 @@ function renderRooms() {
         const help = document.createElement("p");
         help.textContent = room.help;
         const meta = document.createElement("span");
-        meta.textContent = `${room.messageCount} messages · ${room.reportCount} reports · ${formatAdminDate(room.createdAt)}`;
+        meta.textContent =
+            `${room.messageCount} messages · `
+            + `${room.reportCount} room reports · `
+            + `${room.messageReportCount} message reports · `
+            + formatAdminDate(room.createdAt);
         info.append(title, help, meta);
 
         const actions = document.createElement("div");
@@ -237,7 +242,12 @@ function renderBans() {
         reason.textContent = `Reason: ${ban.reason}`;
         const date = document.createElement("span");
         date.textContent = `Banned ${formatAdminDate(ban.createdAt)}`;
-        info.append(address, alias, reason, date);
+        const expiry = document.createElement("span");
+        expiry.className = "adminBanExpiry";
+        expiry.textContent = ban.expiresAt
+            ? `Expires ${formatAdminDate(ban.expiresAt)}`
+            : "Permanent ban";
+        info.append(address, alias, reason, date, expiry);
 
         const unbanButton = document.createElement("button");
         unbanButton.type = "button";
@@ -245,6 +255,142 @@ function renderBans() {
         unbanButton.textContent = "Remove ban";
         unbanButton.addEventListener("click", () => removeBan(ban.id));
         row.append(info, unbanButton);
+        list.appendChild(row);
+    });
+}
+
+function formatReportReason(reason) {
+    const labels = {
+        harassment: "Harassment or bullying",
+        hate: "Hateful content",
+        threat: "Threat or immediate danger",
+        "self-harm": "Self-harm concern",
+        spam: "Spam or scam",
+        other: "Something else"
+    };
+    return labels[reason] || reason;
+}
+
+function renderMessageReports() {
+    const list = document.getElementById("adminMessageReports");
+    const count = document.getElementById("reportedMessagesCount");
+    const reports = adminOverview.messageReports;
+    const total = adminOverview.stats.messageReports;
+    count.textContent = `${total} ${total === 1 ? "report" : "reports"}`;
+    count.classList.toggle("paused", total > 0);
+    list.replaceChildren();
+
+    if (!reports.length) {
+        const empty = document.createElement("p");
+        empty.className = "adminEmpty";
+        empty.textContent = "No open message reports.";
+        list.appendChild(empty);
+        return;
+    }
+
+    reports.forEach(report => {
+        const row = document.createElement("article");
+        row.className = "adminMessageReport";
+
+        const heading = document.createElement("div");
+        heading.className = "adminReportHeading";
+        const title = document.createElement("strong");
+        title.textContent = `${report.sender} · Room ${report.roomCode}`;
+        const date = document.createElement("span");
+        date.textContent = formatAdminDate(report.createdAt);
+        heading.append(title, date);
+
+        const message = document.createElement("p");
+        message.className = "adminReportedText";
+        message.textContent = report.text;
+        const reason = document.createElement("p");
+        reason.className = "adminReportReason";
+        reason.textContent = `Reason: ${formatReportReason(report.reason)}`;
+        const details = document.createElement("p");
+        details.className = "adminReportDetails";
+        details.textContent = report.details
+            ? `Reporter details: ${report.details}`
+            : "Reporter details: none";
+
+        const noteLabel = document.createElement("label");
+        noteLabel.htmlFor = `moderatorNote-${report.id}`;
+        noteLabel.textContent = "Private moderator note";
+        const note = document.createElement("textarea");
+        note.id = `moderatorNote-${report.id}`;
+        note.maxLength = 1000;
+        note.value = report.moderatorNote;
+        note.placeholder = "Record context or the action taken";
+
+        const actions = document.createElement("div");
+        actions.className = "adminButtonRow";
+        const roomButton = document.createElement("button");
+        roomButton.type = "button";
+        roomButton.className = "secondaryBtn";
+        roomButton.textContent = "Manage room";
+        roomButton.addEventListener("click", () =>
+            loadAdminRoom(report.roomCode)
+        );
+        const saveButton = document.createElement("button");
+        saveButton.type = "button";
+        saveButton.className = "secondaryBtn";
+        saveButton.textContent = "Save note";
+        saveButton.addEventListener("click", () =>
+            updateMessageReport(report.id, "save", note.value)
+        );
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "dangerBtn";
+        deleteButton.textContent = "Delete message";
+        deleteButton.addEventListener("click", () =>
+            deleteAdminMessage(report.messageId)
+        );
+        const resolveButton = document.createElement("button");
+        resolveButton.type = "button";
+        resolveButton.textContent = "Resolve report";
+        resolveButton.addEventListener("click", () =>
+            updateMessageReport(report.id, "resolve", note.value)
+        );
+        actions.append(roomButton, saveButton, deleteButton, resolveButton);
+
+        row.append(
+            heading,
+            message,
+            reason,
+            details,
+            noteLabel,
+            note,
+            actions
+        );
+        list.appendChild(row);
+    });
+}
+
+function renderAuditLog() {
+    const list = document.getElementById("adminAuditLog");
+    list.replaceChildren();
+
+    if (!adminOverview.auditLog.length) {
+        const empty = document.createElement("p");
+        empty.className = "adminEmpty";
+        empty.textContent = "No admin actions recorded yet.";
+        list.appendChild(empty);
+        return;
+    }
+
+    adminOverview.auditLog.forEach(entry => {
+        const row = document.createElement("article");
+        row.className = "adminAuditEntry";
+        const heading = document.createElement("div");
+        const action = document.createElement("strong");
+        action.textContent = entry.action.replaceAll("_", " ");
+        const target = document.createElement("span");
+        target.textContent = entry.target;
+        heading.append(action, target);
+        const details = document.createElement("p");
+        details.textContent = entry.details || "No additional details.";
+        const time = document.createElement("time");
+        time.textContent = formatAdminDate(entry.createdAt);
+        row.append(heading, details, time);
         list.appendChild(row);
     });
 }
@@ -258,8 +404,10 @@ async function loadAdminOverview(showMessage = false) {
         renderSiteState();
         renderStats();
         renderReportedRooms();
+        renderMessageReports();
         renderRooms();
         renderBans();
+        renderAuditLog();
         if (showMessage) setAdminStatus("Dashboard refreshed.");
     } catch (error) {
         setAdminStatus(error.message, true);
@@ -311,7 +459,10 @@ function renderAdminMessages(messages) {
         const text = document.createElement("p");
         text.textContent = message.text;
         const time = document.createElement("span");
-        time.textContent = formatAdminDate(message.createdAt);
+        time.textContent =
+            `${formatAdminDate(message.createdAt)} · `
+            + `${message.messageReportCount} open `
+            + `${message.messageReportCount === 1 ? "report" : "reports"}`;
         const address = document.createElement("span");
         address.className = "adminIp";
         address.textContent = message.ipAddress
@@ -354,13 +505,37 @@ async function banIdentity(message) {
         "Abuse or spam"
     );
     if (reason === null) return;
+    const durationInput = prompt(
+        "How many hours should the ban last? Leave blank for a permanent ban.",
+        "24"
+    );
+    if (durationInput === null) return;
+    const cleanedDuration = durationInput.trim();
+    const durationHours = cleanedDuration === ""
+        ? null
+        : Number(cleanedDuration);
+    if (
+        durationHours !== null
+        && (
+            !Number.isInteger(durationHours)
+            || durationHours < 1
+            || durationHours > 8760
+        )
+    ) {
+        setAdminStatus(
+            "Ban duration must be a whole number from 1 to 8,760 hours.",
+            true
+        );
+        return;
+    }
 
     try {
         await adminApi("/api/admin/bans", {
             method: "POST",
             body: JSON.stringify({
                 identityId: message.identityId,
-                reason: reason.trim()
+                reason: reason.trim(),
+                durationHours
             })
         });
         await Promise.all([
@@ -368,6 +543,27 @@ async function banIdentity(message) {
             loadAdminOverview()
         ]);
         setAdminStatus(`${message.sender}’s recent IP was banned.`);
+    } catch (error) {
+        setAdminStatus(error.message, true);
+    }
+}
+
+async function updateMessageReport(reportId, action, moderatorNote) {
+    try {
+        await adminApi(`/api/admin/message-reports/${reportId}`, {
+            method: "PUT",
+            body: JSON.stringify({
+                action,
+                moderatorNote: moderatorNote.trim()
+            })
+        });
+        await loadAdminOverview();
+        if (selectedRoomCode) await loadAdminRoom(selectedRoomCode);
+        setAdminStatus(
+            action === "resolve"
+                ? "Message report resolved."
+                : "Moderator note saved."
+        );
     } catch (error) {
         setAdminStatus(error.message, true);
     }
@@ -395,10 +591,11 @@ async function deleteAdminMessage(messageId) {
         await adminApi(`/api/admin/messages/${messageId}`, {
             method: "DELETE"
         });
-        await Promise.all([
-            loadAdminRoom(selectedRoomCode),
-            loadAdminOverview()
-        ]);
+        const refreshes = [loadAdminOverview()];
+        if (selectedRoomCode) {
+            refreshes.push(loadAdminRoom(selectedRoomCode));
+        }
+        await Promise.all(refreshes);
         setAdminStatus("Message deleted.");
     } catch (error) {
         setAdminStatus(error.message, true);

@@ -29,6 +29,7 @@
         <label for="helpInput" class="srOnly">What's on your mind?</label>
         <textarea id="helpInput" maxlength="500" placeholder="What's on your mind..."></textarea>
         <button id="startRoomBtn" class="startBtn">Start Whisper</button>
+        <p id="homeDraftStatus" class="draftStatus" aria-live="polite"></p>
 
         <div class="sectionHeading">
             <h2>Live Rooms</h2>
@@ -81,7 +82,10 @@
             </div>
         </div>
 
-        <h2 id="roomTitle"></h2>
+        <div class="roomHeading">
+            <h2 id="roomTitle"></h2>
+            <span id="liveStatus" class="liveStatus" data-state="connecting">Connecting</span>
+        </div>
 
         <div id="chatMessages" role="log" aria-live="polite"></div>
         <p id="chatStatus" class="status" role="status" aria-live="polite"></p>
@@ -91,8 +95,41 @@
             <input type="text" id="chatInput" maxlength="1000" autocomplete="off" placeholder="Type your whisper...">
             <button id="sendMessageBtn" class="sendBtn">Send</button>
         </div>
+        <p id="chatDraftStatus" class="draftStatus" aria-live="polite"></p>
 
     </div>
+
+    <dialog id="messageReportDialog" class="reportDialog" aria-labelledby="messageReportHeading">
+        <form id="messageReportForm">
+            <div class="dialogHeading">
+                <div>
+                    <p class="dialogEyebrow">Private moderation report</p>
+                    <h2 id="messageReportHeading">Report message</h2>
+                </div>
+                <button id="cancelMessageReportBtn" class="dialogCloseBtn" type="button" aria-label="Close report dialog">×</button>
+            </div>
+
+            <label for="messageReportReason">Reason</label>
+            <select id="messageReportReason" required>
+                <option value="">Choose a reason</option>
+                <option value="harassment">Harassment or bullying</option>
+                <option value="hate">Hateful content</option>
+                <option value="threat">Threat or immediate danger</option>
+                <option value="self-harm">Self-harm concern</option>
+                <option value="spam">Spam or scam</option>
+                <option value="other">Something else</option>
+            </select>
+
+            <label for="messageReportDetails">Details <span>(optional unless “Something else”)</span></label>
+            <textarea id="messageReportDetails" maxlength="500" placeholder="Briefly tell the moderator what happened"></textarea>
+            <p id="messageReportStatus" class="status" role="status" aria-live="polite"></p>
+
+            <div class="dialogActions">
+                <button id="dismissMessageReportBtn" class="secondaryBtn" type="button">Cancel</button>
+                <button id="submitMessageReportBtn" type="submit">Send report</button>
+            </div>
+        </form>
+    </dialog>
     
     <div class="cardFooter">
         <a href="feedback.html" class="feedbackBtn">Feedback</a>

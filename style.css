@@ -79,7 +79,8 @@ h2 {
 }
 
 textarea,
-input {
+input,
+select {
     width: 100%;
     -webkit-appearance: none;
     appearance: none;
@@ -98,7 +99,8 @@ textarea {
     resize: vertical;
 }
 
-input {
+input,
+select {
     min-width: 0;
     height: 48px;
     padding: 0 15px;
@@ -114,7 +116,8 @@ textarea::placeholder {
 }
 
 textarea:focus,
-input:focus {
+input:focus,
+select:focus {
     border-color: var(--purple);
     box-shadow: 0 0 0 3px rgba(112, 71, 255, 0.17);
 }
@@ -380,8 +383,168 @@ a:focus-visible {
 }
 
 #roomTitle {
-    margin-bottom: 14px;
+    min-width: 0;
     overflow-wrap: anywhere;
+}
+
+.roomHeading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 14px;
+}
+
+.liveStatus {
+    flex: 0 0 auto;
+    padding: 4px 7px;
+    border: 1px solid rgba(102, 255, 163, 0.35);
+    color: #82f8b3;
+    font-size: 0.65rem;
+    font-weight: 750;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.liveStatus[data-state="connecting"],
+.liveStatus[data-state="fallback"] {
+    border-color: rgba(255, 255, 255, 0.16);
+    color: var(--muted);
+}
+
+.messageActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 6px;
+}
+
+.messageActionBtn {
+    min-height: 28px;
+    padding: 2px 0;
+    border: 0;
+    border-bottom: 1px solid transparent;
+    background: transparent;
+    color: #9f97aa;
+    font-size: 0.68rem;
+    font-weight: 650;
+}
+
+.messageActionBtn:hover {
+    border-bottom-color: #b9a7ff;
+    background: transparent;
+    color: #d8ceff;
+}
+
+.mutedMessage .msgText {
+    color: #8f879d;
+    font-style: italic;
+}
+
+.draftStatus {
+    min-height: 17px;
+    margin: 5px 0 0;
+    color: #777080;
+    font-size: 0.68rem;
+}
+
+.draftStatus:empty {
+    min-height: 0;
+    margin: 0;
+}
+
+.reportDialog {
+    width: min(calc(100% - 32px), 460px);
+    max-height: min(90vh, 650px);
+    padding: 22px;
+    overflow-y: auto;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: var(--card-radius);
+    background: #0d061d;
+    color: var(--text);
+    box-shadow: 0 22px 80px rgba(0, 0, 0, 0.65);
+}
+
+.reportDialog::backdrop {
+    background: rgba(3, 0, 10, 0.78);
+    backdrop-filter: blur(3px);
+}
+
+.reportDialog form {
+    display: grid;
+    gap: 9px;
+}
+
+.reportDialog label {
+    margin-top: 5px;
+    color: #d8d1e5;
+    font-size: 0.78rem;
+    font-weight: 650;
+}
+
+.reportDialog label span {
+    color: var(--muted);
+    font-weight: 450;
+}
+
+.reportDialog select {
+    padding-right: 36px;
+    background-image:
+        linear-gradient(45deg, transparent 50%, #aaa 50%),
+        linear-gradient(135deg, #aaa 50%, transparent 50%);
+    background-position:
+        calc(100% - 18px) 21px,
+        calc(100% - 13px) 21px;
+    background-repeat: no-repeat;
+    background-size: 5px 5px, 5px 5px;
+}
+
+.reportDialog textarea {
+    min-height: 100px;
+}
+
+.dialogHeading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+}
+
+.dialogEyebrow {
+    margin: 0 0 3px;
+    color: #8f879d;
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.dialogCloseBtn {
+    width: 38px;
+    min-width: 38px;
+    min-height: 38px;
+    padding: 0;
+    border-color: var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 1.35rem;
+    line-height: 1;
+}
+
+.dialogCloseBtn:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: white;
+}
+
+.dialogActions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.dialogActions button {
+    min-width: 110px;
 }
 
 #chatMessages {
@@ -707,7 +870,9 @@ a:focus-visible {
 
 .adminRooms,
 .adminMessages,
-.adminBans {
+.adminBans,
+.adminMessageReports,
+.adminAuditLog {
     display: grid;
     gap: 9px;
     margin-top: 14px;
@@ -770,6 +935,100 @@ a:focus-visible {
     margin-top: 6px;
     color: #b8accb !important;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.adminBanExpiry {
+    display: block;
+    margin-top: 3px;
+    color: #b8accb !important;
+}
+
+.adminMessageReport {
+    padding: 16px;
+    background: var(--surface);
+}
+
+.adminReportHeading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 14px;
+}
+
+.adminReportHeading strong {
+    color: white;
+}
+
+.adminReportHeading span {
+    color: #888191;
+    font-size: 0.7rem;
+    white-space: nowrap;
+}
+
+.adminReportedText {
+    margin: 10px 0;
+    padding: 10px;
+    border-left: 3px solid rgba(255, 77, 97, 0.55);
+    background: rgba(0, 0, 0, 0.16);
+    color: #eee9f5;
+    overflow-wrap: anywhere;
+}
+
+.adminReportReason,
+.adminReportDetails {
+    margin: 5px 0;
+    color: #cfc7db;
+    font-size: 0.8rem;
+}
+
+.adminMessageReport > label {
+    display: block;
+    margin: 13px 0 6px;
+    color: #d8d1e5;
+    font-size: 0.75rem;
+    font-weight: 650;
+}
+
+.adminMessageReport textarea {
+    min-height: 72px;
+}
+
+.adminAuditEntry {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.5fr) auto;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 14px;
+    background: var(--surface);
+}
+
+.adminAuditEntry > div {
+    min-width: 0;
+}
+
+.adminAuditEntry strong {
+    display: block;
+    color: white;
+    font-size: 0.78rem;
+    text-transform: capitalize;
+}
+
+.adminAuditEntry span,
+.adminAuditEntry time {
+    color: #888191;
+    font-size: 0.7rem;
+}
+
+.adminAuditEntry p {
+    min-width: 0;
+    margin: 0;
+    color: #cfc7db;
+    font-size: 0.78rem;
+    overflow-wrap: anywhere;
+}
+
+.adminAuditEntry time {
+    white-space: nowrap;
 }
 
 .adminPrivacyNote {
@@ -879,9 +1138,16 @@ a:focus-visible {
 
     .adminRoom,
     .adminMessage,
-    .adminBan {
+    .adminBan,
+    .adminAuditEntry {
         grid-template-columns: 1fr;
         gap: 12px;
+    }
+
+    .adminReportHeading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
     }
 
     .adminRoomActions,
