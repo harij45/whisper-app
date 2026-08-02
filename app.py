@@ -20,12 +20,14 @@ from threading import Lock
 from cryptography.fernet import Fernet, InvalidToken
 from flask import (
     Flask,
+    Response,
     abort,
     jsonify,
     redirect,
     request,
     send_from_directory,
     session,
+    stream_with_context,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -46,13 +48,24 @@ TURNSTILE_VERIFY_ENDPOINT = (
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 IP_PRIVACY_KEY = os.environ.get("IP_PRIVACY_KEY", "")
+MIN_IP_PRIVACY_KEY_LENGTH = 16
 SQLITE_PATH = os.environ.get(
     "SQLITE_PATH", os.path.join(app.root_path, "data", "whisper.db")
 )
 ROOM_TTL_MS = 24 * 60 * 60 * 1000
 FEEDBACK_TTL_MS = 30 * 24 * 60 * 60 * 1000
 IP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+AUDIT_RETENTION_MS = 180 * 24 * 60 * 60 * 1000
+CLEANUP_INTERVAL_SECONDS = 60
 MAX_MESSAGES_PER_ROOM = 500
+MESSAGE_REPORT_REASONS = {
+    "harassment",
+    "hate",
+    "self-harm",
+    "spam",
+    "threat",
+    "other",
+}
 ALIAS_ADJECTIVES = (
     "Amber", "Arctic", "Ashen", "Azure", "Brave", "Bright", "Calm", "Cedar",
     "Cosmic", "Crimson", "Daring", "Dawn", "Deep", "Ember", "Frost", "Gentle",
@@ -91,6 +104,8 @@ app.config.update(
 _rate_buckets = defaultdict(deque)
 _rate_lock = Lock()
 _rate_salt = secrets.token_bytes(32)
+_cleanup_lock = Lock()
+_last_cleanup_at = 0.0
 
 
 def now_ms():
@@ -220,6 +235,60 @@ def ensure_identity_ip_columns(connection):
             )
 
 
+def banned_ip_alias_column_exists(connection):
+    if IS_POSTGRES:
+        row = execute(
+            connection,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'banned_ips'
+              AND column_name = ?
+            """,
+            ("alias",),
+        ).fetchone()
+        return row is not None
+
+    columns = execute(connection, "PRAGMA table_info(banned_ips)").fetchall()
+    return any(column["name"] == "alias" for column in columns)
+
+
+def ensure_banned_ip_alias_column(connection):
+    if not banned_ip_alias_column_exists(connection):
+        execute(
+            connection,
+            "ALTER TABLE banned_ips ADD COLUMN alias VARCHAR(40)",
+        )
+
+
+def table_column_exists(connection, table_name, column_name):
+    if IS_POSTGRES:
+        row = execute(
+            connection,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ?
+              AND column_name = ?
+            """,
+            (table_name, column_name),
+        ).fetchone()
+        return row is not None
+
+    columns = execute(connection, f"PRAGMA table_info({table_name})").fetchall()
+    return any(column["name"] == column_name for column in columns)
+
+
+def ensure_ban_expiry_column(connection):
+    if not table_column_exists(connection, "banned_ips", "expires_at"):
+        execute(
+            connection,
+            "ALTER TABLE banned_ips ADD COLUMN expires_at BIGINT",
+        )
+
+
 def init_database():
     room_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -237,6 +306,12 @@ def init_database():
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     )
     ban_id = (
+        "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    )
+    message_report_id = (
+        "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    )
+    audit_id = (
         "BIGSERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     )
 
@@ -320,7 +395,43 @@ def init_database():
                 id {ban_id},
                 ip_hash VARCHAR(64) NOT NULL UNIQUE,
                 ip_encrypted TEXT NOT NULL,
+                alias VARCHAR(40),
                 reason VARCHAR(500) NOT NULL,
+                created_at BIGINT NOT NULL,
+                expires_at BIGINT
+            )
+            """,
+        )
+        ensure_banned_ip_alias_column(connection)
+        ensure_ban_expiry_column(connection)
+        execute(
+            connection,
+            f"""
+            CREATE TABLE IF NOT EXISTS message_reports (
+                id {message_report_id},
+                message_id BIGINT NOT NULL,
+                room_code VARCHAR(8) NOT NULL,
+                reporter_token_hash VARCHAR(64) NOT NULL,
+                reason VARCHAR(40) NOT NULL,
+                details VARCHAR(500) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'open',
+                moderator_note VARCHAR(1000) NOT NULL DEFAULT '',
+                created_at BIGINT NOT NULL,
+                resolved_at BIGINT,
+                UNIQUE (message_id, reporter_token_hash),
+                FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                FOREIGN KEY (room_code) REFERENCES rooms(code) ON DELETE CASCADE
+            )
+            """,
+        )
+        execute(
+            connection,
+            f"""
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id {audit_id},
+                action VARCHAR(80) NOT NULL,
+                target VARCHAR(200) NOT NULL,
+                details VARCHAR(1000) NOT NULL,
                 created_at BIGINT NOT NULL
             )
             """,
@@ -366,13 +477,45 @@ def init_database():
             "CREATE INDEX IF NOT EXISTS identities_ip_hash "
             "ON identities(ip_hash)",
         )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS message_reports_status_created "
+            "ON message_reports(status, created_at)",
+        )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS message_reports_room_code "
+            "ON message_reports(room_code)",
+        )
+        execute(
+            connection,
+            "CREATE INDEX IF NOT EXISTS admin_audit_created_at "
+            "ON admin_audit_log(created_at)",
+        )
         migrate_legacy_aliases(connection)
 
 
 def purge_expired_content(connection):
+    global _last_cleanup_at
+
+    current = time.monotonic()
+    if current - _last_cleanup_at < CLEANUP_INTERVAL_SECONDS:
+        return
+
+    with _cleanup_lock:
+        current = time.monotonic()
+        if current - _last_cleanup_at < CLEANUP_INTERVAL_SECONDS:
+            return
+
+        _purge_expired_content(connection)
+        _last_cleanup_at = current
+
+
+def _purge_expired_content(connection):
     room_cutoff = now_ms() - ROOM_TTL_MS
     feedback_cutoff = now_ms() - FEEDBACK_TTL_MS
     ip_cutoff = now_ms() - IP_RETENTION_MS
+    audit_cutoff = now_ms() - AUDIT_RETENTION_MS
     execute(
         connection,
         """
@@ -391,6 +534,16 @@ def purge_expired_content(connection):
     )
     execute(connection, "DELETE FROM rooms WHERE created_at < ?", (room_cutoff,))
     execute(connection, "DELETE FROM feedback WHERE created_at < ?", (feedback_cutoff,))
+    execute(
+        connection,
+        "DELETE FROM banned_ips WHERE expires_at IS NOT NULL AND expires_at <= ?",
+        (now_ms(),),
+    )
+    execute(
+        connection,
+        "DELETE FROM admin_audit_log WHERE created_at < ?",
+        (audit_cutoff,),
+    )
     execute(
         connection,
         """
@@ -434,6 +587,22 @@ def set_site_setting(connection, key, value):
         SET value = excluded.value, updated_at = excluded.updated_at
         """,
         (key, value, now_ms()),
+    )
+
+
+def record_admin_action(connection, action, target, details=""):
+    execute(
+        connection,
+        """
+        INSERT INTO admin_audit_log (action, target, details, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            clean_text(action, 80),
+            clean_text(target, 200),
+            clean_text(details, 1000),
+            now_ms(),
+        ),
     )
 
 
@@ -560,7 +729,7 @@ def migrate_legacy_aliases(connection):
 
 
 def ip_privacy_enabled():
-    return len(IP_PRIVACY_KEY) >= 32
+    return len(IP_PRIVACY_KEY) >= MIN_IP_PRIVACY_KEY_LENGTH
 
 
 def ip_hash(address):
@@ -604,8 +773,13 @@ def is_ip_banned(connection, address):
         return False
     row = execute(
         connection,
-        "SELECT 1 FROM banned_ips WHERE ip_hash = ?",
-        (address_hash,),
+        """
+        SELECT 1
+        FROM banned_ips
+        WHERE ip_hash = ?
+          AND (expires_at IS NULL OR expires_at > ?)
+        """,
+        (address_hash, now_ms()),
     ).fetchone()
     return row is not None
 
@@ -616,10 +790,8 @@ def reject_banned_ip(connection, address):
     return (
         jsonify(
             {
-                "error": (
-                    "Access from this network has been blocked by the site "
-                    "administrator."
-                )
+                "error": "You have been blocked.",
+                "code": "IP_BLOCKED",
             }
         ),
         403,
@@ -822,6 +994,18 @@ def public_message(row):
     }
 
 
+def sse_event(event, data, event_id=None):
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(
+        "data: "
+        + json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    )
+    return "\n".join(lines) + "\n\n"
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers["Content-Security-Policy"] = (
@@ -843,7 +1027,9 @@ def add_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
-    if request.path.startswith("/api/") or request.path in {
+    if response.mimetype == "text/event-stream":
+        response.headers["Cache-Control"] = "no-cache, no-transform"
+    elif request.path.startswith("/api/") or request.path in {
         "/admin",
         "/admin/login",
         "/admin.js",
@@ -913,9 +1099,25 @@ def static_file(filename):
         "report.png",
         "favicon.png",
         "apple-touch-icon.png",
+        "icon-192.png",
+        "icon-512.png",
+        "manifest.webmanifest",
+        "sw.js",
     }
     if filename not in public_files:
         abort(404)
+    if filename == "manifest.webmanifest":
+        return send_from_directory(
+            app.root_path,
+            filename,
+            mimetype="application/manifest+json",
+        )
+    if filename == "sw.js":
+        return send_from_directory(
+            app.root_path,
+            filename,
+            mimetype="application/javascript",
+        )
     return send_from_directory(app.root_path, filename)
 
 
@@ -942,6 +1144,8 @@ def admin_login():
 
     session.clear()
     session["is_admin"] = True
+    with database() as connection:
+        record_admin_action(connection, "admin_signed_in", ADMIN_USERNAME)
     return jsonify({"signedIn": True})
 
 
@@ -949,6 +1153,8 @@ def admin_login():
 @admin_required
 @admin_action_required
 def admin_logout():
+    with database() as connection:
+        record_admin_action(connection, "admin_signed_out", ADMIN_USERNAME)
     session.clear()
     return ("", 204)
 
@@ -992,8 +1198,12 @@ def assign_identity():
 @app.get("/api/rooms")
 @rate_limit(120, 60)
 def list_rooms():
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         rows = execute(
             connection,
             "SELECT code, help_text, created_at FROM rooms ORDER BY created_at DESC",
@@ -1082,8 +1292,12 @@ def create_room():
 @rate_limit(120, 60)
 def get_room(room_code):
     room_code = room_code.upper()
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         room = execute(
             connection,
             "SELECT code, help_text, created_at FROM rooms WHERE code = ?",
@@ -1108,6 +1322,109 @@ def get_room(room_code):
             "room": public_room(room),
             "messages": [public_message(message) for message in messages],
         }
+    )
+
+
+@app.get("/api/rooms/<room_code>/events")
+@rate_limit(30, 60)
+def stream_room_events(room_code):
+    room_code = room_code.upper()
+    if len(room_code) != 8 or not room_code.isalnum():
+        return jsonify({"error": "Invalid room code."}), 400
+
+    try:
+        query_after = int(request.args.get("after", "0"))
+        known_count = int(request.args.get("count", "0"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid event cursor."}), 400
+
+    header_after = request.headers.get("Last-Event-ID", "")
+    if header_after.isdigit():
+        query_after = max(query_after, int(header_after))
+    last_message_id = max(0, query_after)
+    known_count = max(0, known_count)
+    address = client_ip()
+
+    with database() as connection:
+        purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
+        room = execute(
+            connection,
+            "SELECT 1 FROM rooms WHERE code = ?",
+            (room_code,),
+        ).fetchone()
+        if room is None:
+            return jsonify({"error": "Room not found."}), 404
+
+    @stream_with_context
+    def generate_events():
+        nonlocal last_message_id, known_count
+        deadline = time.monotonic() + 55
+        heartbeat_at = time.monotonic() + 15
+        yield "retry: 1000\n\n"
+
+        while time.monotonic() < deadline:
+            with database() as connection:
+                if is_ip_banned(connection, address):
+                    yield sse_event(
+                        "blocked",
+                        {"error": "You have been blocked.", "code": "IP_BLOCKED"},
+                    )
+                    return
+
+                room_exists = execute(
+                    connection,
+                    "SELECT 1 FROM rooms WHERE code = ?",
+                    (room_code,),
+                ).fetchone()
+                if room_exists is None:
+                    yield sse_event("room_closed", {"roomCode": room_code})
+                    return
+
+                rows = execute(
+                    connection,
+                    """
+                    SELECT id, sender, text, created_at
+                    FROM messages
+                    WHERE room_code = ? AND id > ?
+                    ORDER BY id
+                    """,
+                    (room_code, last_message_id),
+                ).fetchall()
+                current_count = execute(
+                    connection,
+                    "SELECT COUNT(*) AS count FROM messages WHERE room_code = ?",
+                    (room_code,),
+                ).fetchone()["count"]
+
+            expected_count = known_count + len(rows)
+            if current_count != expected_count:
+                yield sse_event(
+                    "sync",
+                    {"roomCode": room_code, "messageCount": current_count},
+                )
+
+            for message in rows:
+                public = public_message(message)
+                last_message_id = public["id"]
+                yield sse_event("message", public, public["id"])
+
+            known_count = current_count
+            current_time = time.monotonic()
+            if current_time >= heartbeat_at:
+                yield sse_event("heartbeat", {"roomCode": room_code})
+                heartbeat_at = current_time + 15
+            time.sleep(0.75)
+
+    return Response(
+        generate_events(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -1205,8 +1522,12 @@ def delete_room(room_code):
     data = request.get_json(silent=True) or {}
     owner_token = clean_text(data.get("ownerToken"), 200)
 
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         room = execute(
             connection,
             "SELECT owner_token_hash FROM rooms WHERE code = ?",
@@ -1228,8 +1549,12 @@ def delete_room(room_code):
 @rate_limit(5, 3600)
 def report_room(room_code):
     room_code = room_code.upper()
+    address = client_ip()
     with database() as connection:
         purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
         room = execute(
             connection, "SELECT code FROM rooms WHERE code = ?", (room_code,)
         ).fetchone()
@@ -1241,6 +1566,99 @@ def report_room(room_code):
             (room_code, now_ms()),
         )
     return jsonify({"reported": True}), 201
+
+
+@app.post("/api/rooms/<room_code>/messages/<int:message_id>/report")
+@rate_limit(10, 3600)
+def report_message(room_code, message_id):
+    room_code = room_code.upper()
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    identity_token = clean_text(data.get("identityToken"), 200)
+    reason = clean_text(data.get("reason"), 40).lower()
+    details = clean_text(data.get("details"), 500)
+
+    if len(identity_token) < 20:
+        return jsonify({"error": "A valid identity is required."}), 400
+    if reason not in MESSAGE_REPORT_REASONS:
+        return jsonify({"error": "Select a valid report reason."}), 400
+    if reason == "other" and not details:
+        return jsonify({"error": "Please briefly describe the issue."}), 400
+
+    address = client_ip()
+    with database() as connection:
+        purge_expired_content(connection)
+        banned_response = reject_banned_ip(connection, address)
+        if banned_response:
+            return banned_response
+        reporter = find_identity_alias(connection, identity_token)
+        if reporter is None:
+            return jsonify({"error": "Refresh the page to restore your identity."}), 401
+        update_identity_ip(connection, identity_token, address, now_ms())
+        message = execute(
+            connection,
+            """
+            SELECT sender
+            FROM messages
+            WHERE id = ? AND room_code = ?
+            """,
+            (message_id, room_code),
+        ).fetchone()
+        if message is None:
+            return jsonify({"error": "Message not found."}), 404
+        if secure_equal(message["sender"], reporter):
+            return jsonify({"error": "You cannot report your own message."}), 400
+
+        timestamp = now_ms()
+        if IS_POSTGRES:
+            inserted = execute(
+                connection,
+                """
+                INSERT INTO message_reports
+                    (
+                        message_id, room_code, reporter_token_hash,
+                        reason, details, status, moderator_note,
+                        created_at, resolved_at
+                    )
+                VALUES (?, ?, ?, ?, ?, 'open', '', ?, NULL)
+                ON CONFLICT (message_id, reporter_token_hash) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    message_id,
+                    room_code,
+                    hash_token(identity_token),
+                    reason,
+                    details,
+                    timestamp,
+                ),
+            ).fetchone()
+            created = inserted is not None
+        else:
+            inserted = execute(
+                connection,
+                """
+                INSERT OR IGNORE INTO message_reports
+                    (
+                        message_id, room_code, reporter_token_hash,
+                        reason, details, status, moderator_note,
+                        created_at, resolved_at
+                    )
+                VALUES (?, ?, ?, ?, ?, 'open', '', ?, NULL)
+                """,
+                (
+                    message_id,
+                    room_code,
+                    hash_token(identity_token),
+                    reason,
+                    details,
+                    timestamp,
+                ),
+            )
+            created = inserted.rowcount == 1
+
+    return jsonify({"reported": True, "created": created}), 201 if created else 200
 
 
 @app.post("/api/feedback")
@@ -1306,6 +1724,14 @@ def admin_overview():
                 connection,
                 f"SELECT COUNT(*) AS count FROM {table}",
             ).fetchone()["count"]
+        stats["messageReports"] = execute(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM message_reports
+            WHERE status = 'open'
+            """,
+        ).fetchone()["count"]
 
         room_rows = execute(
             connection,
@@ -1317,7 +1743,11 @@ def admin_overview():
                 (SELECT COUNT(*) FROM messages
                     WHERE messages.room_code = rooms.code) AS message_count,
                 (SELECT COUNT(*) FROM reports
-                    WHERE reports.room_code = rooms.code) AS report_count
+                    WHERE reports.room_code = rooms.code) AS report_count,
+                (SELECT COUNT(*) FROM message_reports
+                    WHERE message_reports.room_code = rooms.code
+                      AND message_reports.status = 'open')
+                    AS message_report_count
             FROM rooms
             ORDER BY rooms.created_at DESC
             LIMIT 200
@@ -1329,15 +1759,48 @@ def admin_overview():
             SELECT
                 banned_ips.id,
                 banned_ips.ip_encrypted,
+                COALESCE(
+                    banned_ips.alias,
+                    (
+                        SELECT MIN(identities.alias)
+                        FROM identities
+                        WHERE identities.ip_hash = banned_ips.ip_hash
+                    )
+                ) AS alias,
                 banned_ips.reason,
                 banned_ips.created_at,
-                (
-                    SELECT MIN(identities.alias)
-                    FROM identities
-                    WHERE identities.ip_hash = banned_ips.ip_hash
-                ) AS alias
+                banned_ips.expires_at
             FROM banned_ips
             ORDER BY banned_ips.created_at DESC
+            """,
+        ).fetchall()
+        message_report_rows = execute(
+            connection,
+            """
+            SELECT
+                message_reports.id,
+                message_reports.message_id,
+                message_reports.room_code,
+                message_reports.reason,
+                message_reports.details,
+                message_reports.moderator_note,
+                message_reports.created_at,
+                messages.sender,
+                messages.text
+            FROM message_reports
+            JOIN messages ON messages.id = message_reports.message_id
+            WHERE message_reports.status = 'open'
+            ORDER BY message_reports.created_at DESC
+            LIMIT 200
+            """,
+        ).fetchall()
+        audit_rows = execute(
+            connection,
+            """
+            SELECT id, action, target, details, created_at
+            FROM admin_audit_log
+            ORDER BY created_at DESC
+            LIMIT 100
             """,
         ).fetchall()
         config = get_site_config(connection)
@@ -1349,6 +1812,7 @@ def admin_overview():
             "createdAt": row["created_at"],
             "messageCount": row["message_count"],
             "reportCount": row["report_count"],
+            "messageReportCount": row["message_report_count"],
         }
         for row in room_rows
     ]
@@ -1359,14 +1823,41 @@ def admin_overview():
             "ipAddress": decrypt_ip(row["ip_encrypted"]),
             "reason": row["reason"],
             "createdAt": row["created_at"],
+            "expiresAt": row["expires_at"],
         }
         for row in ban_rows
+    ]
+    message_reports = [
+        {
+            "id": row["id"],
+            "messageId": row["message_id"],
+            "roomCode": row["room_code"],
+            "reason": row["reason"],
+            "details": row["details"],
+            "moderatorNote": row["moderator_note"],
+            "createdAt": row["created_at"],
+            "sender": row["sender"],
+            "text": row["text"],
+        }
+        for row in message_report_rows
+    ]
+    audit_log = [
+        {
+            "id": row["id"],
+            "action": row["action"],
+            "target": row["target"],
+            "details": row["details"],
+            "createdAt": row["created_at"],
+        }
+        for row in audit_rows
     ]
     return jsonify(
         {
             "stats": stats,
             "rooms": rooms,
             "bans": bans,
+            "messageReports": message_reports,
+            "auditLog": audit_log,
             "config": config,
             "ipModerationConfigured": ip_privacy_enabled(),
         }
@@ -1400,7 +1891,13 @@ def admin_room_detail(room_code):
                 messages.created_at,
                 identities.id AS identity_id,
                 identities.ip_encrypted,
-                banned_ips.id AS ban_id
+                banned_ips.id AS ban_id,
+                (
+                    SELECT COUNT(*)
+                    FROM message_reports
+                    WHERE message_reports.message_id = messages.id
+                      AND message_reports.status = 'open'
+                ) AS message_report_count
             FROM messages
             LEFT JOIN identities ON identities.alias = messages.sender
             LEFT JOIN banned_ips ON banned_ips.ip_hash = identities.ip_hash
@@ -1421,6 +1918,7 @@ def admin_room_detail(room_code):
             "identityId": message["identity_id"],
             "ipAddress": decrypt_ip(message["ip_encrypted"]),
             "banId": message["ban_id"],
+            "messageReportCount": message["message_report_count"],
         }
         for message in messages
     ]
@@ -1444,8 +1942,9 @@ def admin_ban_identity():
             jsonify(
                 {
                     "error": (
-                        "IP moderation is not configured. Add IP_PRIVACY_KEY "
-                        "in Render first."
+                        "IP moderation is not configured. Add an "
+                        "IP_PRIVACY_KEY of at least 16 characters in Render "
+                        "first."
                     )
                 }
             ),
@@ -1455,8 +1954,23 @@ def admin_ban_identity():
     data = request.get_json(silent=True) or {}
     identity_id = data.get("identityId")
     reason = clean_text(data.get("reason"), 500) or "No reason provided"
+    duration_hours = data.get("durationHours")
     if not isinstance(identity_id, int):
         return jsonify({"error": "A valid user is required."}), 400
+    if duration_hours is not None and (
+        not isinstance(duration_hours, int)
+        or isinstance(duration_hours, bool)
+        or not 1 <= duration_hours <= 8760
+    ):
+        return (
+            jsonify({"error": "Ban duration must be between 1 and 8,760 hours."}),
+            400,
+        )
+    expires_at = (
+        now_ms() + duration_hours * 60 * 60 * 1000
+        if duration_hours is not None
+        else None
+    )
 
     with database() as connection:
         identity = execute(
@@ -1487,23 +2001,47 @@ def admin_ban_identity():
             connection,
             """
             INSERT INTO banned_ips
-                (ip_hash, ip_encrypted, reason, created_at)
-            VALUES (?, ?, ?, ?)
+                (ip_hash, ip_encrypted, alias, reason, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (ip_hash) DO UPDATE
             SET
                 ip_encrypted = excluded.ip_encrypted,
+                alias = excluded.alias,
                 reason = excluded.reason,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                expires_at = excluded.expires_at
             """,
             (
                 identity["ip_hash"],
                 identity["ip_encrypted"],
+                identity["alias"],
                 reason,
                 now_ms(),
+                expires_at,
             ),
         )
+        duration_label = (
+            f"{duration_hours} hours"
+            if duration_hours is not None
+            else "permanent"
+        )
+        record_admin_action(
+            connection,
+            "ban_created",
+            identity["alias"],
+            f"Duration: {duration_label}. Reason: {reason}",
+        )
 
-    return jsonify({"banned": True, "alias": identity["alias"]}), 201
+    return (
+        jsonify(
+            {
+                "banned": True,
+                "alias": identity["alias"],
+                "expiresAt": expires_at,
+            }
+        ),
+        201,
+    )
 
 
 @app.delete("/api/admin/bans/<int:ban_id>")
@@ -1512,13 +2050,23 @@ def admin_ban_identity():
 @admin_action_required
 def admin_remove_ban(ban_id):
     with database() as connection:
+        ban = execute(
+            connection,
+            "SELECT alias FROM banned_ips WHERE id = ?",
+            (ban_id,),
+        ).fetchone()
+        if ban is None:
+            return jsonify({"error": "Ban not found."}), 404
         deleted = execute(
             connection,
             "DELETE FROM banned_ips WHERE id = ?",
             (ban_id,),
         )
-        if deleted.rowcount == 0:
-            return jsonify({"error": "Ban not found."}), 404
+        record_admin_action(
+            connection,
+            "ban_removed",
+            ban["alias"] or f"ban:{ban_id}",
+        )
     return ("", 204)
 
 
@@ -1532,9 +2080,15 @@ def admin_delete_room(room_code):
         return jsonify({"error": "Invalid room code."}), 400
 
     with database() as connection:
-        deleted = delete_room_data(connection, room_code)
-        if deleted.rowcount == 0:
+        room = execute(
+            connection,
+            "SELECT code FROM rooms WHERE code = ?",
+            (room_code,),
+        ).fetchone()
+        if room is None:
             return jsonify({"error": "Room not found."}), 404
+        deleted = delete_room_data(connection, room_code)
+        record_admin_action(connection, "room_deleted", room_code)
     return ("", 204)
 
 
@@ -1544,14 +2098,94 @@ def admin_delete_room(room_code):
 @admin_action_required
 def admin_delete_message(message_id):
     with database() as connection:
+        message = execute(
+            connection,
+            "SELECT room_code, sender FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+        if message is None:
+            return jsonify({"error": "Message not found."}), 404
         deleted = execute(
             connection,
             "DELETE FROM messages WHERE id = ?",
             (message_id,),
         )
-        if deleted.rowcount == 0:
-            return jsonify({"error": "Message not found."}), 404
+        record_admin_action(
+            connection,
+            "message_deleted",
+            f"message:{message_id}",
+            f"Room {message['room_code']}; sender {message['sender']}",
+        )
     return ("", 204)
+
+
+@app.put("/api/admin/message-reports/<int:report_id>")
+@rate_limit(120, 60)
+@admin_required
+@admin_action_required
+def admin_update_message_report(report_id):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    action = clean_text(data.get("action"), 20).lower()
+    moderator_note = clean_text(data.get("moderatorNote"), 1000)
+    if action not in {"save", "resolve"}:
+        return jsonify({"error": "Choose save or resolve."}), 400
+
+    with database() as connection:
+        report = execute(
+            connection,
+            """
+            SELECT message_id, room_code, status
+            FROM message_reports
+            WHERE id = ?
+            """,
+            (report_id,),
+        ).fetchone()
+        if report is None:
+            return jsonify({"error": "Message report not found."}), 404
+
+        if action == "resolve":
+            execute(
+                connection,
+                """
+                UPDATE message_reports
+                SET status = 'resolved', moderator_note = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (moderator_note, now_ms(), report_id),
+            )
+            audit_action = "message_report_resolved"
+        else:
+            execute(
+                connection,
+                """
+                UPDATE message_reports
+                SET moderator_note = ?
+                WHERE id = ?
+                """,
+                (moderator_note, report_id),
+            )
+            audit_action = "moderator_note_saved"
+
+        record_admin_action(
+            connection,
+            audit_action,
+            f"report:{report_id}",
+            (
+                f"Message {report['message_id']} in room "
+                f"{report['room_code']}; moderator note: "
+                f"{moderator_note or '(empty)'}"
+            ),
+        )
+
+    return jsonify(
+        {
+            "reportId": report_id,
+            "status": "resolved" if action == "resolve" else report["status"],
+            "moderatorNote": moderator_note,
+        }
+    )
 
 
 @app.delete("/api/admin/reports")
@@ -1566,13 +2200,21 @@ def admin_clear_reports():
         if room_code:
             if len(room_code) != 8 or not room_code.isalnum():
                 return jsonify({"error": "Invalid room code."}), 400
-            execute(
+            deleted = execute(
                 connection,
                 "DELETE FROM reports WHERE room_code = ?",
                 (room_code,),
             )
+            target = room_code
         else:
-            execute(connection, "DELETE FROM reports")
+            deleted = execute(connection, "DELETE FROM reports")
+            target = "all rooms"
+        record_admin_action(
+            connection,
+            "room_reports_cleared",
+            target,
+            f"{deleted.rowcount} reports removed",
+        )
     return ("", 204)
 
 
@@ -1593,6 +2235,12 @@ def admin_update_settings():
     with database() as connection:
         set_site_setting(connection, "site_notice", notice)
         set_site_setting(connection, "site_paused", "1" if paused else "0")
+        record_admin_action(
+            connection,
+            "site_settings_updated",
+            "site",
+            f"Paused: {'yes' if paused else 'no'}; notice: {'set' if notice else 'cleared'}",
+        )
         config = get_site_config(connection)
     return jsonify(config)
 
@@ -1607,9 +2255,19 @@ def admin_delete_all_rooms():
         return jsonify({"error": "The confirmation text did not match."}), 400
 
     with database() as connection:
+        room_count = execute(
+            connection,
+            "SELECT COUNT(*) AS count FROM rooms",
+        ).fetchone()["count"]
         execute(connection, "DELETE FROM reports")
         execute(connection, "DELETE FROM messages")
         execute(connection, "DELETE FROM rooms")
+        record_admin_action(
+            connection,
+            "all_rooms_deleted",
+            "all rooms",
+            f"{room_count} rooms removed",
+        )
     return ("", 204)
 
 
